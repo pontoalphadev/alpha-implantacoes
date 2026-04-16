@@ -1,3463 +1,1913 @@
-import React from 'react';
-import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import * as d3 from 'd3';
-import _ from 'lodash';
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 
-// ─────────────────────────────────────────────
-// BRAND TOKENS — Ponto Alpha Café
-// ─────────────────────────────────────────────
-const BRAND = {
-  cafeEscuro: '#2c1810',
-  marromQuente: '#4a3020',
-  caramelo: '#8b6f4e',
-  douradoCafe: '#c4a478',
-  creme: '#f5ebe0',
-  offWhite: '#faf6f1',
-  latte: '#d4a574',
-  verdeFolha: '#6b8e5a',
-  verdeClaro: '#a3c293',
-  vermelho: '#c0392b',
-  amarelo: '#e6a817',
-  azul: '#2c5282',
+const B = {
+  cafe:"#2c1810", marrom:"#4a3020", caramelo:"#8b6f4e", dourado:"#c4a478",
+  creme:"#f5ebe0", offwhite:"#faf6f1", latte:"#d4a574", verde:"#6b8e5a",
+  vermelho:"#b03020", laranja:"#d4783a", cinza:"#9b8e85", branco:"#ffffff"
 };
 
-const STATUS_COLORS = {
-  concluido: BRAND.verdeFolha,
-  em_andamento: BRAND.douradoCafe,
-  pendente: BRAND.amarelo,
-  nao_iniciado: '#9e9e9e',
-  atrasado: BRAND.vermelho,
-  bloqueado: '#7b1fa2',
+function useIsMobile() {
+  const [m, setM] = useState(() => window.innerWidth < 768);
+  useEffect(() => {
+    const fn = () => setM(window.innerWidth < 768);
+    window.addEventListener("resize", fn);
+    return () => window.removeEventListener("resize", fn);
+  }, []);
+  return m;
+}
+
+const store = {
+  async get(k, def) {
+    try { const r = await window.storage?.get(k); if (r?.value) return JSON.parse(r.value); } catch {}
+    try { const v = localStorage.getItem(k); if (v) return JSON.parse(v); } catch {}
+    return def;
+  },
+  async set(k, v) {
+    try { await window.storage?.set(k, JSON.stringify(v)); } catch {}
+    try { localStorage.setItem(k, JSON.stringify(v)); } catch {}
+  }
 };
 
-const STATUS_LABELS = {
-  concluido: 'Concluído',
-  em_andamento: 'Em Andamento',
-  pendente: 'Pendente',
-  nao_iniciado: 'Não Iniciado',
-  atrasado: 'Atrasado',
-  bloqueado: 'Bloqueado',
+// ─── USER STORE (persiste usuários cadastrados no localStorage) ───────────────
+const userStore = {
+  getAll() {
+    try { const v = localStorage.getItem("ai-users-v1"); return v ? JSON.parse(v) : []; } catch { return []; }
+  },
+  save(users) {
+    try { localStorage.setItem("ai-users-v1", JSON.stringify(users)); } catch {}
+  },
+  add(nome, email, senha) {
+    const users = userStore.getAll();
+    const emailNorm = email.trim().toLowerCase();
+    if (users.find(u => u.email === emailNorm)) return { ok: false, erro: "Este email já está cadastrado." };
+    users.push({ nome: nome.trim(), email: emailNorm, senha: senha.trim() });
+    userStore.save(users);
+    return { ok: true };
+  },
+  find(email, senha) {
+    const emailNorm = email.trim().toLowerCase();
+    const senhaNorm = senha.trim();
+    // admin fixo
+    if (emailNorm === VALID_USER.email.toLowerCase() && senhaNorm === VALID_USER.senha) return VALID_USER;
+    // usuários cadastrados
+    const users = userStore.getAll();
+    return users.find(u => u.email === emailNorm && u.senha === senhaNorm) || null;
+  }
 };
 
-// ─────────────────────────────────────────────
-// DEMO DATA — Tasks template from spreadsheet
-// ─────────────────────────────────────────────
-const TASK_TEMPLATE = [
-  {
-    priority: 1,
-    task: 'Buscar e selecionar ponto comercial',
-    weight: 2,
-    startDay: 0,
-    duration: 5,
-    category: 'Planejamento',
-  },
-  {
-    priority: 2,
-    task: 'Projeto da Loja/layout',
-    weight: 2,
-    startDay: 7,
-    duration: 5,
-    category: 'Projeto',
-  },
-  {
-    priority: 2,
-    task: 'Visita técnica (medidas e elétrica)',
-    weight: 2,
-    startDay: 9,
-    duration: 3,
-    category: 'Projeto',
-  },
-  {
-    priority: 2,
-    task: 'Assinatura do contrato com franqueado',
-    weight: 2,
-    startDay: 11,
-    duration: 2,
-    category: 'Contratual',
-  },
-  {
-    priority: 2,
-    task: 'Assinar Contrato de franquia específico',
-    weight: 2,
-    startDay: 13,
-    duration: 2,
-    category: 'Contratual',
-  },
-  {
-    priority: 3,
-    task: 'Abertura da Empresa e CNPJ',
-    weight: 2,
-    startDay: 20,
-    duration: 10,
-    category: 'Jurídico',
-  },
-  {
-    priority: 3,
-    task: 'Cotação Quiosque/Loja',
-    weight: 2,
-    startDay: 22,
-    duration: 5,
-    category: 'Aquisição',
-  },
-  {
-    priority: 3,
-    task: 'Projeto arquitetônico',
-    weight: 2,
-    startDay: 24,
-    duration: 7,
-    category: 'Projeto',
-  },
-  {
-    priority: 3,
-    task: 'Projeto elétrico',
-    weight: 2,
-    startDay: 26,
-    duration: 5,
-    category: 'Projeto',
-  },
-  {
-    priority: 4,
-    task: 'Contratar comunicação visual',
-    weight: 2,
-    startDay: 33,
-    duration: 5,
-    category: 'Marketing',
-  },
-  {
-    priority: 4,
-    task: 'Conta Bancária',
-    weight: 2,
-    startDay: 35,
-    duration: 3,
-    category: 'Financeiro',
-  },
-  {
-    priority: 4,
-    task: 'Aquisição Máquinas de Cartão',
-    weight: 2,
-    startDay: 37,
-    duration: 3,
-    category: 'Equipamentos',
-  },
-  {
-    priority: 4,
-    task: 'Documentação ANVISA, prefeitura, CCM',
-    weight: 2,
-    startDay: 39,
-    duration: 10,
-    category: 'Jurídico',
-  },
-  {
-    priority: 4,
-    task: 'Comprar uniformes equipe',
-    weight: 2,
-    startDay: 41,
-    duration: 5,
-    category: 'Aquisição',
-  },
-  {
-    priority: 4,
-    task: 'Executar reforma civil / montagem quiosque',
-    weight: 2,
-    startDay: 43,
-    duration: 15,
-    category: 'Obra',
-  },
-  {
-    priority: 4,
-    task: 'Aquisição móveis e equipamentos',
-    weight: 2,
-    startDay: 45,
-    duration: 10,
-    category: 'Aquisição',
-  },
-  {
-    priority: 4,
-    task: 'Comprar Logo e luminosos',
-    weight: 2,
-    startDay: 47,
-    duration: 7,
-    category: 'Marketing',
-  },
-  {
-    priority: 4,
-    task: 'Instalação bombona de água',
-    weight: 2,
-    startDay: 49,
-    duration: 2,
-    category: 'Infraestrutura',
-  },
-  {
-    priority: 4,
-    task: 'Aprovação dos projetos',
-    weight: 2,
-    startDay: 51,
-    duration: 5,
-    category: 'Jurídico',
-  },
-  {
-    priority: 4,
-    task: 'Aprovação APT / Autorização instalação',
-    weight: 2,
-    startDay: 53,
-    duration: 7,
-    category: 'Jurídico',
-  },
-  {
-    priority: 4,
-    task: 'Equipamentos sob medida',
-    weight: 2,
-    startDay: 55,
-    duration: 10,
-    category: 'Equipamentos',
-  },
-  {
-    priority: 4,
-    task: 'Instalação elétrica',
-    weight: 2,
-    startDay: 57,
-    duration: 5,
-    category: 'Infraestrutura',
-  },
-  {
-    priority: 4,
-    task: 'Montagem Loja/Quiosque',
-    weight: 2,
-    startDay: 59,
-    duration: 10,
-    category: 'Obra',
-  },
-  {
-    priority: 4,
-    task: 'Solicitar equipamentos comodato CD',
-    weight: 2,
-    startDay: 61,
-    duration: 3,
-    category: 'Equipamentos',
-  },
-  {
-    priority: 4,
-    task: 'Relação de utensílios para compra',
-    weight: 2,
-    startDay: 63,
-    duration: 2,
-    category: 'Aquisição',
-  },
-  {
-    priority: 5,
-    task: 'Solicitar ligação de energia elétrica',
-    weight: 2,
-    startDay: 70,
-    duration: 7,
-    category: 'Infraestrutura',
-  },
-  {
-    priority: 5,
-    task: 'Instalação da internet',
-    weight: 2,
-    startDay: 72,
-    duration: 3,
-    category: 'Infraestrutura',
-  },
-  {
-    priority: 5,
-    task: 'Instalar Câmeras',
-    weight: 2,
-    startDay: 74,
-    duration: 3,
-    category: 'Infraestrutura',
-  },
-  {
-    priority: 5,
-    task: 'Comprar cofre, extintores, carrinho',
-    weight: 2,
-    startDay: 76,
-    duration: 3,
-    category: 'Aquisição',
-  },
-  {
-    priority: 5,
-    task: 'Placas obrigatórias e regulamentação',
-    weight: 2,
-    startDay: 78,
-    duration: 2,
-    category: 'Jurídico',
-  },
-  {
-    priority: 5,
-    task: 'Definir Cardápio e Preços',
-    weight: 2,
-    startDay: 80,
-    duration: 3,
-    category: 'Operação',
-  },
-  {
-    priority: 5,
-    task: 'Habilitação Bandeiras Máquina de Cartão',
-    weight: 2,
-    startDay: 82,
-    duration: 3,
-    category: 'Financeiro',
-  },
-  {
-    priority: 5,
-    task: 'Instalação sistema de software e caixa',
-    weight: 2,
-    startDay: 84,
-    duration: 3,
-    category: 'TI',
-  },
-  {
-    priority: 5,
-    task: 'Solicitar vistoria do imóvel',
-    weight: 2,
-    startDay: 86,
-    duration: 2,
-    category: 'Jurídico',
-  },
-  {
-    priority: 5,
-    task: 'Cadastro nos fornecedores',
-    weight: 2,
-    startDay: 88,
-    duration: 3,
-    category: 'Operação',
-  },
-  {
-    priority: 5,
-    task: 'Contratar 1ª equipe (3 treinando)',
-    weight: 2,
-    startDay: 90,
-    duration: 7,
-    category: 'RH',
-  },
-  {
-    priority: 5,
-    task: 'Treinamento teórico equipe',
-    weight: 2,
-    startDay: 92,
-    duration: 5,
-    category: 'Treinamento',
-  },
-  {
-    priority: 5,
-    task: 'Pedido uniformes, botas, crachás',
-    weight: 2,
-    startDay: 94,
-    duration: 5,
-    category: 'Aquisição',
-  },
-  {
-    priority: 5,
-    task: 'Instalação Comunicação Visual',
-    weight: 2,
-    startDay: 96,
-    duration: 5,
-    category: 'Marketing',
-  },
-  {
-    priority: 5,
-    task: 'Teste geral das instalações',
-    weight: 2,
-    startDay: 98,
-    duration: 2,
-    category: 'Qualidade',
-  },
-  {
-    priority: 5,
-    task: 'Testes dos equipamentos',
-    weight: 2,
-    startDay: 100,
-    duration: 2,
-    category: 'Qualidade',
-  },
-  {
-    priority: 5,
-    task: 'Recrutar e Selecionar 1ª equipe',
-    weight: 2,
-    startDay: 102,
-    duration: 5,
-    category: 'RH',
-  },
-  {
-    priority: 5,
-    task: 'Treinamento prático equipe',
-    weight: 2,
-    startDay: 104,
-    duration: 5,
-    category: 'Treinamento',
-  },
-  {
-    priority: 5,
-    task: 'Comprar banquetas',
-    weight: 2,
-    startDay: 106,
-    duration: 3,
-    category: 'Aquisição',
-  },
-  {
-    priority: 5,
-    task: 'Enviar projeto para solicitar utensílios',
-    weight: 2,
-    startDay: 108,
-    duration: 2,
-    category: 'Operação',
-  },
-  {
-    priority: 5,
-    task: 'Definir horário e escala da equipe',
-    weight: 2,
-    startDay: 110,
-    duration: 2,
-    category: 'Operação',
-  },
-  {
-    priority: 5,
-    task: 'Instalação e entrega de equipamentos',
-    weight: 2,
-    startDay: 112,
-    duration: 3,
-    category: 'Equipamentos',
-  },
-  {
-    priority: 6,
-    task: '1º pedido CD',
-    weight: 2,
-    startDay: 119,
-    duration: 3,
-    category: 'Operação',
-  },
-  {
-    priority: 6,
-    task: 'Organização da loja / 1ª produção',
-    weight: 2,
-    startDay: 121,
-    duration: 3,
-    category: 'Operação',
-  },
-  {
-    priority: 7,
-    task: 'Inauguração Loja',
-    weight: 2,
-    startDay: 128,
-    duration: 2,
-    category: 'Marco',
-  },
+const TT = [
+  {id:1,p:1,t:"Buscar e selecionar ponto comercial",w:0.02,s:0,d:5,dep:null},
+  {id:2,p:2,t:"Projeto da Loja / Layout",w:0.02,s:7,d:5,dep:1},
+  {id:3,p:2,t:"Visita técnica (medidas e elétrica)",w:0.02,s:9,d:3,dep:2},
+  {id:4,p:2,t:"Assinatura do contrato c/ franqueado",w:0.02,s:11,d:2,dep:3},
+  {id:5,p:2,t:"Contrato de franquia / CNPJ",w:0.02,s:13,d:2,dep:4},
+  {id:6,p:3,t:"Abertura da Empresa e CNPJ",w:0.02,s:20,d:7,dep:5},
+  {id:7,p:3,t:"Cotação Quiosque / Loja",w:0.02,s:22,d:5,dep:5},
+  {id:8,p:3,t:"Projeto arquitetônico",w:0.02,s:24,d:7,dep:3},
+  {id:9,p:3,t:"Projeto elétrico",w:0.02,s:26,d:5,dep:8},
+  {id:10,p:4,t:"Contratar comunicação visual",w:0.02,s:33,d:5,dep:8},
+  {id:11,p:4,t:"Conta Bancária",w:0.02,s:35,d:3,dep:6},
+  {id:12,p:4,t:"Aquisição Máquinas de Cartão",w:0.02,s:37,d:3,dep:11},
+  {id:13,p:4,t:"Documentação ANVISA / Prefeitura",w:0.02,s:39,d:10,dep:6},
+  {id:14,p:4,t:"Comprar uniformes para equipe",w:0.02,s:41,d:3,dep:null},
+  {id:15,p:4,t:"Reforma civil / pré-montagem",w:0.04,s:45,d:14,dep:20},
+  {id:16,p:4,t:"Aquisição móveis e equipamentos",w:0.03,s:45,d:7,dep:7},
+  {id:17,p:4,t:"Comprar Logo e luminosos",w:0.02,s:47,d:5,dep:10},
+  {id:18,p:4,t:"Instalação de bombona para água",w:0.02,s:59,d:2,dep:15},
+  {id:19,p:4,t:"Aprovação dos projetos",w:0.03,s:31,d:7,dep:9},
+  {id:20,p:4,t:"Aprovação APT / Autorização instalação",w:0.03,s:38,d:7,dep:19},
+  {id:21,p:4,t:"Equipamentos sob medida",w:0.03,s:55,d:10,dep:7},
+  {id:22,p:4,t:"Instalação elétrica",w:0.03,s:59,d:5,dep:15},
+  {id:23,p:4,t:"Montagem Loja / Quiosque",w:0.04,s:64,d:7,dep:22},
+  {id:24,p:4,t:"Solicitar equipamentos comodato CD",w:0.02,s:61,d:3,dep:null},
+  {id:25,p:4,t:"Levantamento utensílios equipe",w:0.02,s:61,d:2,dep:null},
+  {id:26,p:5,t:"Solicitar ligação do relógio elétrico",w:0.02,s:65,d:3,dep:15},
+  {id:27,p:5,t:"Instalação da internet",w:0.02,s:71,d:2,dep:23},
+  {id:28,p:5,t:"Instalar câmeras de segurança",w:0.02,s:73,d:2,dep:27},
+  {id:29,p:5,t:"Comprar cofre, extintores, carrinho",w:0.02,s:69,d:2,dep:null},
+  {id:30,p:5,t:"Configuração do sistema de vendas",w:0.02,s:73,d:3,dep:27},
+  {id:31,p:5,t:"Cadastro fornecedores / estoque",w:0.02,s:73,d:3,dep:null},
+  {id:32,p:5,t:"Contratação e seleção da equipe",w:0.04,s:70,d:7,dep:null},
+  {id:33,p:5,t:"Treinamento operacional completo",w:0.04,s:77,d:5,dep:32},
+  {id:34,p:5,t:"Primeiro pedido de produtos",w:0.02,s:79,d:3,dep:31},
+  {id:35,p:6,t:"Ambientação e decoração final",w:0.02,s:82,d:3,dep:23},
+  {id:36,p:6,t:"Vistoria final e checklist abertura",w:0.03,s:84,d:2,dep:35},
+  {id:37,p:7,t:"Inauguração da unidade",w:0.05,s:87,d:1,dep:36},
 ];
 
-function generateDemoData() {
-  const today = new Date();
-  const obras = [
-    {
-      id: 'obra-1',
-      nome: 'Ponto Alpha — Rodoviária Brasília K1',
-      cidade: 'Brasília',
-      endereco: 'Rodoviária Plano Piloto, Quiosque K1',
-      responsavel: 'Licia',
-      dataBase: new Date(today.getTime() - 45 * 86400000),
-      prazoFinal: new Date(today.getTime() + 90 * 86400000),
-      status: 'em_andamento',
-      observacoes: 'Primeira unidade do pool Brasília. Prioridade máxima.',
-    },
-    {
-      id: 'obra-2',
-      nome: 'Ponto Alpha — Rodoviária Brasília K2',
-      cidade: 'Brasília',
-      endereco: 'Rodoviária Plano Piloto, Quiosque K2',
-      responsavel: 'Baruque',
-      dataBase: new Date(today.getTime() - 30 * 86400000),
-      prazoFinal: new Date(today.getTime() + 105 * 86400000),
-      status: 'em_andamento',
-      observacoes: 'Segunda unidade Brasília. Seguindo cronograma K1.',
-    },
-    {
-      id: 'obra-3',
-      nome: 'Ponto Alpha — Teleperformance SP',
-      cidade: 'São Paulo',
-      endereco: 'Água Branca, São Paulo - SP',
-      responsavel: 'Thiago',
-      dataBase: new Date(today.getTime() - 90 * 86400000),
-      prazoFinal: new Date(today.getTime() + 15 * 86400000),
-      status: 'em_andamento',
-      observacoes: 'Unidade corporativa dentro da Teleperformance.',
-    },
-    {
-      id: 'obra-4',
-      nome: 'Ponto Alpha — Shopping Uberaba',
-      cidade: 'Uberaba',
-      endereco: 'Shopping Uberaba, Piso L2',
-      responsavel: 'Tatiane',
-      dataBase: new Date(today.getTime() - 120 * 86400000),
-      prazoFinal: new Date(today.getTime() - 5 * 86400000),
-      status: 'atrasado',
-      observacoes:
-        'Atraso na aprovação de projetos pela administração do shopping.',
-    },
-  ];
+const INAUG = [
+  "Loja limpa e organizada","Equipamentos testados","Sistema de vendas ativo",
+  "Estoque inicial completo","Uniformes prontos","Vigilância sanitária aprovada",
+  "Internet e câmeras ok","Comunicação visual instalada","Fotos da loja registradas",
+  "Post redes sociais agendado","Inauguração oficial realizada"
+];
 
-  const statusDistributions = {
-    'obra-1': { concluido: 12, em_andamento: 5, pendente: 3, nao_iniciado: 30 },
-    'obra-2': { concluido: 6, em_andamento: 4, pendente: 5, nao_iniciado: 35 },
-    'obra-3': { concluido: 38, em_andamento: 8, pendente: 2, nao_iniciado: 2 },
-    'obra-4': { concluido: 30, em_andamento: 3, pendente: 10, nao_iniciado: 7 },
-  };
+const CB = {1:5000,2:8000,3:3000,4:2000,5:2000,6:3000,7:12000,8:6000,9:4000,10:8000,11:500,12:1500,13:2000,14:3000,15:35000,16:40000,17:6000,18:1500,19:1000,20:500,21:15000,22:8000,23:5000,24:2000,25:500,26:1000,27:1200,28:3500,29:2000,30:1500,31:500,32:5000,33:4000,34:8000,35:3000,36:500,37:2000};
 
-  const obrasTarefas = {};
-  obras.forEach((obra) => {
-    const dist = statusDistributions[obra.id];
-    let idx = 0;
-    const tarefas = TASK_TEMPLATE.map((t, i) => {
-      let status;
-      if (idx < dist.concluido) status = 'concluido';
-      else if (idx < dist.concluido + dist.em_andamento)
-        status = 'em_andamento';
-      else if (idx < dist.concluido + dist.em_andamento + dist.pendente)
-        status = 'pendente';
-      else status = 'nao_iniciado';
-      idx++;
+const TODAY = new Date("2026-04-13");
 
-      const startDate = new Date(
-        obra.dataBase.getTime() + t.startDay * 86400000
-      );
-      const endDate = new Date(startDate.getTime() + t.duration * 86400000);
-      const progress =
-        status === 'concluido'
-          ? 100
-          : status === 'em_andamento'
-          ? Math.floor(Math.random() * 60 + 20)
-          : status === 'pendente'
-          ? Math.floor(Math.random() * 15)
-          : 0;
+const VALID_USER = { email: "admin@pontoacafe.com", senha: "alpha2026", nome: "Administrador" };
 
-      const isOverdue = status !== 'concluido' && endDate < today;
+const statusColor = (s) => ({
+  "Concluído": B.verde, "Concluída": B.verde, "No Prazo": B.verde,
+  "Em Andamento": B.latte, "Em Risco": B.laranja,
+  "Atrasado": B.vermelho, "Atrasada": B.vermelho,
+  "Bloqueado": B.cinza, "Não Iniciado": B.caramelo
+}[s] || B.caramelo);
 
-      return {
-        id: `${obra.id}-task-${i}`,
-        ...t,
-        status: isOverdue && status !== 'nao_iniciado' ? 'atrasado' : status,
-        progress,
-        startDate,
-        endDate,
-        realEndDate:
-          status === 'concluido'
-            ? new Date(endDate.getTime() + (Math.random() * 6 - 2) * 86400000)
-            : null,
-        responsavel: [
-          'Licia',
-          'Baruque',
-          'Thiago',
-          'Tatiane',
-          'Leandro',
-          'Marcos',
-          'Daiana',
-        ][Math.floor(Math.random() * 7)],
-        comentarios: [],
-      };
-    });
-    obrasTarefas[obra.id] = tarefas;
-  });
+const statusBg = (s) => ({
+  "Concluído": "#e8f5e1", "Concluída": "#e8f5e1", "No Prazo": "#e8f5e1",
+  "Em Andamento": "#fff8ee", "Em Risco": "#fff0e0",
+  "Atrasado": "#fdecea", "Atrasada": "#fdecea",
+  "Não Iniciado": B.creme, "Bloqueado": "#f0edf8"
+}[s] || B.creme);
 
-  return { obras, obrasTarefas };
+const prioColor = (p) => [B.vermelho, B.laranja, B.latte, B.caramelo, B.verde, B.cinza, B.marrom][p - 1] || B.caramelo;
+const fBRL = (v) => "R$\u00A0" + Math.round(v || 0).toLocaleString("pt-BR");
+
+function computeStatus(tk, prog, elap) {
+  if (prog === 100) return "Concluído";
+  const end = tk.s + tk.d;
+  if (prog > 0 && elap > end) return "Atrasado";
+  if (prog > 0) return "Em Andamento";
+  if (elap > end) return "Atrasado";
+  return "Não Iniciado";
 }
 
-// ─────────────────────────────────────────────
-// UTILITIES
-// ─────────────────────────────────────────────
-function formatDate(d) {
-  if (!d) return '—';
-  return d.toLocaleDateString('pt-BR', {
-    day: '2-digit',
-    month: '2-digit',
-    year: '2-digit',
+function isBlocked(tk, tarefas) {
+  if (!tk.dep) return false;
+  const dep = tarefas.find(t => t.id === tk.dep);
+  return dep && dep.status !== "Concluído" && tk.progresso === 0;
+}
+
+function daysLeft(tk, elap) { return (tk.s + tk.d) - elap; }
+
+function recalc(obra) {
+  const tw = obra.tarefas.reduce((a, t) => a + t.w, 0);
+  const avanco = Math.round(obra.tarefas.reduce((a, t) => a + t.w * (t.progresso / 100), 0) / tw * 100);
+  const conc = obra.tarefas.filter(t => t.status === "Concluído").length;
+  const emAnd = obra.tarefas.filter(t => t.status === "Em Andamento").length;
+  const atras = obra.tarefas.filter(t => t.status === "Atrasado").length;
+  const naoIn = obra.tarefas.filter(t => t.status === "Não Iniciado").length;
+  const base = new Date(obra.dataBase);
+  const elap = Math.floor((TODAY - base) / 86400000);
+  const expP = Math.min(100, elap / 88 * 100);
+  const idp = expP > 0 ? Math.round(avanco / expP * 100) / 100 : 1.00;
+  const ppc = Math.round(conc / obra.tarefas.length * 100);
+  let oS = "No Prazo";
+  if (atras > 3 || idp < 0.80) oS = "Atrasada";
+  else if (atras > 0 || idp < 0.95) oS = "Em Risco";
+  if (conc === obra.tarefas.length) oS = "Concluída";
+  const cp = obra.tarefas.reduce((a, t) => a + (t.custo_previsto || 0), 0);
+  const cr = obra.tarefas.reduce((a, t) => a + (t.custo_realizado || 0), 0);
+  return { ...obra, avanco, conc, emAnd, atras, naoIn, elap, total: 88, idp, ppc, obraStatus: oS, cp, cr };
+}
+
+function genHistorico(baseDateStr, prog) {
+  const base = new Date(baseDateStr);
+  const tw = TT.reduce((a, t) => a + t.w, 0);
+  const wks = Math.max(1, Math.floor((TODAY - base) / (7 * 86400000)));
+  return Array.from({ length: wks }, (_, i) => {
+    const frac = Math.min(1, (i + 1) / wks);
+    const sp = prog.map(p => Math.round(p * frac));
+    const av = Math.round(TT.reduce((a, t, j) => a + t.w * (sp[j] || 0) / 100, 0) / tw * 100);
+    return { semana: "S" + (i + 1), avanco: av };
   });
 }
 
-function daysBetween(a, b) {
-  return Math.round((b - a) / 86400000);
+function makeObra(id, nome, cidade, endereco, baseDateStr, resp, prog, ex = {}) {
+  const base = new Date(baseDateStr);
+  const elap = Math.floor((TODAY - base) / 86400000);
+  const tarefas = TT.map((tk, i) => ({
+    ...tk,
+    progresso: prog[i] || 0,
+    status: computeStatus(tk, prog[i] || 0, elap),
+    responsavel: resp,
+    comentario: "",
+    custo_previsto: CB[tk.id] || 1000,
+    custo_realizado: (prog[i] || 0) > 0 ? Math.round((CB[tk.id] || 1000) * (prog[i] || 0) / 100) : 0
+  }));
+  const o = {
+    id, nome, cidade, endereco, resp, dataBase: baseDateStr,
+    franqueado: ex.franqueado || { nome: "", cpf: "", telefone: "", email: "" },
+    contato2: ex.contato2 || { nome: "", cargo: "Gerente de Obra", telefone: "", email: "" },
+    contato3: ex.contato3 || { nome: "", cargo: "Arquiteto / Engenheiro", telefone: "", email: "" },
+    tarefas,
+    historico: ex.historico || genHistorico(baseDateStr, prog),
+    inauguracao: INAUG.map((t, i) => ({ id: i + 1, t, done: false })),
+    obs: ""
+  };
+  return recalc(o);
 }
 
-function calcObraMetrics(tarefas) {
-  const total = tarefas.length;
-  const concluidas = tarefas.filter((t) => t.status === 'concluido').length;
-  const emAndamento = tarefas.filter((t) => t.status === 'em_andamento').length;
-  const pendentes = tarefas.filter((t) => t.status === 'pendente').length;
-  const naoIniciadas = tarefas.filter(
-    (t) => t.status === 'nao_iniciado'
-  ).length;
-  const atrasadas = tarefas.filter((t) => t.status === 'atrasado').length;
+const OBRAS_DEFAULT = [
+  makeObra(1, "Brasília — Rodoviária Plano Piloto", "Brasília-DF", "Rodoviária Plano Piloto, Loja B-07", "2026-02-03", "Baruque Oliveira",
+    [100,100,100,100,100,100,100,100,100,100,100,100,40,100,60,70,50,0,100,60,30,0,0,80,100,0,0,0,0,0,0,0,0,0,0,0,0],
+    { franqueado: { nome: "Ricardo Souza", cpf: "123.456.789-00", telefone: "(61) 99988-7766", email: "ricardo@email.com" },
+      contato2: { nome: "Leandro Alves", cargo: "Engenheiro", telefone: "(61) 98877-6655", email: "" },
+      contato3: { nome: "Ana Paula", cargo: "Arquiteta", telefone: "(61) 97766-5544", email: "" } }),
+  makeObra(2, "Uberlândia — Shopping Iguatemi", "Uberlândia-MG", "Av. Rondon Pacheco 4600, Piso L2", "2026-02-22", "Licia Fernandes",
+    [100,100,100,100,100,100,100,80,60,0,40,0,0,100,0,0,0,0,90,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
+  makeObra(3, "São Paulo — Tatuapé", "São Paulo-SP", "Rua Melo Freire 420, Piso Térreo", "2026-03-15", "Thiago Martins",
+    [100,100,100,100,60,30,20,0,0,0,0,0,0,50,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]),
+];
 
-  const progressoPonderado = tarefas.reduce(
-    (acc, t) => acc + (t.progress * t.weight) / 100,
-    0
-  );
-  const pesoTotal = tarefas.reduce((acc, t) => acc + t.weight, 0);
-  const avancoFisico =
-    pesoTotal > 0 ? (progressoPonderado / pesoTotal) * 100 : 0;
-  const ppc = total > 0 ? (concluidas / total) * 100 : 0;
-
-  const tarefasComPrazo = tarefas.filter(
-    (t) => t.status !== 'concluido' && t.status !== 'nao_iniciado'
-  );
-  const today = new Date();
-  const atrasoDias = tarefasComPrazo.reduce((acc, t) => {
-    const diff = daysBetween(t.endDate, today);
-    return diff > 0 ? acc + diff : acc;
-  }, 0);
-
-  return {
-    total,
-    concluidas,
-    emAndamento,
-    pendentes,
-    naoIniciadas,
-    atrasadas,
-    avancoFisico,
-    ppc,
-    atrasoDias,
-  };
+async function callAI(prompt) {
+  const r = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 900, messages: [{ role: "user", content: prompt }] })
+  });
+  const d = await r.json();
+  return d.content?.find(b => b.type === "text")?.text || "Sem resposta.";
 }
 
-// ─────────────────────────────────────────────
-// ICONS (inline SVG components)
-// ─────────────────────────────────────────────
-const Icon = ({ name, size = 20, color = 'currentColor' }) => {
-  const icons = {
-    home: (
-      <path d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-4 0a1 1 0 01-1-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 01-1 1" />
-    ),
-    chart: (
-      <path d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-    ),
-    ai: <path d="M13 10V3L4 14h7v7l9-11h-7z" />,
-    whatsapp: (
-      <path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-    ),
-    plus: <path d="M12 4v16m8-8H4" />,
-    calendar: (
-      <path d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-    ),
-    alert: (
-      <path d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4.5c-.77-.833-2.694-.833-3.464 0L3.34 16.5c-.77.833.192 2.5 1.732 2.5z" />
-    ),
-    check: <path d="M5 13l4 4L19 7" />,
-    clock: <path d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />,
-    building: (
-      <path d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" />
-    ),
-    filter: (
-      <path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" />
-    ),
-    arrow: <path d="M9 5l7 7-7 7" />,
-    back: <path d="M15 19l-7-7 7-7" />,
-    menu: <path d="M4 6h16M4 12h16M4 18h16" />,
-    close: <path d="M6 18L18 6M6 6l12 12" />,
-    download: (
-      <path d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-    ),
-    user: (
-      <path d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-    ),
-    file: (
-      <path d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-    ),
-    refresh: (
-      <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-    ),
-    gantt: (
-      <>
-        <path d="M4 6h6M4 10h10M4 14h8M4 18h12" />
-        <circle cx="10" cy="6" r="1.5" fill={color} />
-        <circle cx="14" cy="10" r="1.5" fill={color} />
-        <circle cx="12" cy="14" r="1.5" fill={color} />
-        <circle cx="16" cy="18" r="1.5" fill={color} />
-      </>
-    ),
-  };
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke={color}
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {icons[name] || icons.home}
-    </svg>
-  );
-};
+function exportCSV() {
+  const hdr = ["Prioridade","Tarefa","Peso","Dependência","Início(dias)","Duração(dias)","Responsável","Custo Previsto"];
+  const rows = TT.map(t => [t.p, '"' + t.t + '"', t.w, t.dep || "", t.s, t.d, "", ""].join(","));
+  const a = document.createElement("a");
+  a.href = "data:text/csv;charset=utf-8," + encodeURIComponent("\uFEFF" + [hdr.join(","), ...rows].join("\n"));
+  a.download = "modelo_implantacao.csv";
+  a.click();
+}
 
-// ─────────────────────────────────────────────
-// STATUS BADGE COMPONENT
-// ─────────────────────────────────────────────
-const StatusBadge = ({ status, small }) => {
-  const color = STATUS_COLORS[status] || '#999';
-  const label = STATUS_LABELS[status] || status;
+function printPDF(obra, aiText) {
+  const w = window.open("", "_blank");
+  if (!w) { alert("Permita pop-ups para exportar PDF."); return; }
+  const c = statusColor(obra.obraStatus);
+  w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Relatório — ${obra.nome}</title>
+  <style>body{font-family:'Montserrat',sans-serif;padding:36px;max-width:760px;margin:0 auto;color:#2c1810}
+  h1{border-bottom:3px solid #c4a478;padding-bottom:10px}h2{color:#4a3020;margin-top:24px}
+  .badge{display:inline-block;padding:3px 12px;border-radius:12px;font-size:12px;font-weight:bold;background:${statusBg(obra.obraStatus)};color:${c}}
+  .g{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:16px 0}
+  .k{background:#faf6f1;border-radius:8px;padding:12px;text-align:center}
+  .kv{font-size:24px;font-weight:bold}.kl{font-size:10px;color:#8b6f4e;text-transform:uppercase}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+  th{background:#2c1810;color:#f5ebe0;padding:6px 10px;text-align:left}
+  td{padding:6px 10px;border-bottom:1px solid #f5ebe0}tr:nth-child(even){background:#faf6f1}
+  @media print{body{padding:20px}}</style></head><body>
+  <h1>Relatório de Implantação</h1>
+  <p><strong>${obra.nome}</strong> &nbsp; <span class="badge">${obra.obraStatus}</span></p>
+  <p>${obra.cidade} · Responsável: ${obra.resp}</p>
+  <div class="g">
+    <div class="k"><div class="kv">${obra.avanco}%</div><div class="kl">Avanço</div></div>
+    <div class="k"><div class="kv">${obra.ppc}%</div><div class="kl">PPC</div></div>
+    <div class="k"><div class="kv">${obra.idp}</div><div class="kl">IDP</div></div>
+    <div class="k"><div class="kv">${obra.conc}/${obra.tarefas.length}</div><div class="kl">Concluídas</div></div>
+  </div>
+  ${aiText ? "<h2>Análise da IA</h2><p style='white-space:pre-wrap;line-height:1.7'>" + aiText + "</p>" : ""}
+  <h2>Tarefas</h2>
+  <table><tr><th>P</th><th>Tarefa</th><th>Status</th><th>%</th></tr>
+  ${obra.tarefas.map(t => "<tr><td>P" + t.p + "</td><td>" + t.t + "</td><td>" + t.status + "</td><td>" + t.progresso + "%</td></tr>").join("")}
+  </table>
+  <p style="margin-top:36px;font-size:10px;color:#9b8e85">Alpha Implantações · ${new Date().toLocaleDateString("pt-BR")}</p>
+  </body></html>`);
+  w.document.close();
+  setTimeout(() => w.print(), 500);
+}
+
+// ─── BASE UI ─────────────────────────────────────────────────────────────────
+function Badge({ s }) {
   return (
-    <span
-      style={{
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 6,
-        padding: small ? '2px 8px' : '4px 12px',
-        borderRadius: 20,
-        fontSize: small ? 11 : 12,
-        fontWeight: 600,
-        color: '#fff',
-        background: color,
-        letterSpacing: 0.3,
-        whiteSpace: 'nowrap',
-      }}
-    >
-      <span
-        style={{
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          background: '#fff',
-          opacity: 0.7,
-        }}
-      />
-      {label}
+    <span style={{ background: statusBg(s), color: statusColor(s), padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700, border: "1px solid " + statusColor(s) + "44", whiteSpace: "nowrap", display: "inline-block" }}>
+      {s}
     </span>
   );
-};
-
-// ─────────────────────────────────────────────
-// PROGRESS BAR COMPONENT
-// ─────────────────────────────────────────────
-const ProgressBar = ({ value, height = 8, color, showLabel = true }) => {
-  const c =
-    color ||
-    (value >= 80
-      ? BRAND.verdeFolha
-      : value >= 40
-      ? BRAND.douradoCafe
-      : BRAND.vermelho);
-  return (
-    <div
-      style={{ display: 'flex', alignItems: 'center', gap: 8, width: '100%' }}
-    >
-      <div
-        style={{
-          flex: 1,
-          height,
-          borderRadius: height,
-          background: `${BRAND.cafeEscuro}15`,
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            width: `${Math.min(value, 100)}%`,
-            height: '100%',
-            borderRadius: height,
-            background: `linear-gradient(90deg, ${c}, ${c}cc)`,
-            transition: 'width 0.8s cubic-bezier(.4,0,.2,1)',
-          }}
-        />
-      </div>
-      {showLabel && (
-        <span
-          style={{
-            fontSize: 12,
-            fontWeight: 700,
-            color: c,
-            minWidth: 36,
-            textAlign: 'right',
-          }}
-        >
-          {Math.round(value)}%
-        </span>
-      )}
-    </div>
-  );
-};
-
-// ─────────────────────────────────────────────
-// KPI CARD COMPONENT
-// ─────────────────────────────────────────────
-const KPICard = ({ label, value, subtitle, icon, color, small }) => (
-  <div
-    style={{
-      background: '#fff',
-      borderRadius: 16,
-      padding: small ? '16px 18px' : '20px 24px',
-      boxShadow: '0 1px 4px #2c181008, 0 4px 16px #2c181006',
-      border: `1px solid ${BRAND.creme}`,
-      display: 'flex',
-      flexDirection: 'column',
-      gap: 8,
-      position: 'relative',
-      overflow: 'hidden',
-    }}
-  >
-    <div
-      style={{
-        position: 'absolute',
-        top: 0,
-        left: 0,
-        width: 4,
-        height: '100%',
-        background: color || BRAND.douradoCafe,
-        borderRadius: '16px 0 0 16px',
-      }}
-    />
-    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-      <div
-        style={{
-          width: 36,
-          height: 36,
-          borderRadius: 10,
-          background: `${color || BRAND.douradoCafe}18`,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}
-      >
-        <Icon
-          name={icon || 'chart'}
-          size={18}
-          color={color || BRAND.douradoCafe}
-        />
-      </div>
-      <span
-        style={{
-          fontSize: 12,
-          fontWeight: 600,
-          color: BRAND.caramelo,
-          textTransform: 'uppercase',
-          letterSpacing: 0.8,
-        }}
-      >
-        {label}
-      </span>
-    </div>
-    <div
-      style={{
-        fontSize: small ? 28 : 36,
-        fontWeight: 800,
-        color: BRAND.cafeEscuro,
-        lineHeight: 1,
-        fontFamily: "'DM Serif Display', serif",
-      }}
-    >
-      {value}
-    </div>
-    {subtitle && (
-      <span style={{ fontSize: 12, color: BRAND.caramelo }}>{subtitle}</span>
-    )}
-  </div>
-);
-
-// ─────────────────────────────────────────────
-// GANTT CHART COMPONENT
-// ─────────────────────────────────────────────
-const GanttChart = ({ tarefas, obra }) => {
-  const containerRef = useRef(null);
-  const [filter, setFilter] = useState({
-    priority: 'all',
-    status: 'all',
-    responsavel: 'all',
-  });
-  const [hoveredTask, setHoveredTask] = useState(null);
-  const [scrollLeft, setScrollLeft] = useState(0);
-
-  const filtered = useMemo(() => {
-    let f = [...tarefas];
-    if (filter.priority !== 'all')
-      f = f.filter((t) => t.priority === Number(filter.priority));
-    if (filter.status !== 'all')
-      f = f.filter((t) => t.status === filter.status);
-    if (filter.responsavel !== 'all')
-      f = f.filter((t) => t.responsavel === filter.responsavel);
-    return f;
-  }, [tarefas, filter]);
-
-  const responsaveis = useMemo(
-    () => [...new Set(tarefas.map((t) => t.responsavel))].filter(Boolean),
-    [tarefas]
-  );
-
-  const allDates = useMemo(() => {
-    if (!filtered.length)
-      return { min: new Date(), max: new Date(), totalDays: 30 };
-    const starts = filtered.map((t) => t.startDate);
-    const ends = filtered.map((t) => t.realEndDate || t.endDate);
-    const min = new Date(Math.min(...starts));
-    const max = new Date(Math.max(...ends));
-    min.setDate(min.getDate() - 2);
-    max.setDate(max.getDate() + 5);
-    return { min, max, totalDays: daysBetween(min, max) };
-  }, [filtered]);
-
-  const ROW_HEIGHT = 36;
-  const HEADER_HEIGHT = 50;
-  const LABEL_WIDTH = 280;
-  const DAY_WIDTH = 28;
-  const chartWidth = allDates.totalDays * DAY_WIDTH;
-  const chartHeight = filtered.length * ROW_HEIGHT + HEADER_HEIGHT;
-  const today = new Date();
-  const todayX = daysBetween(allDates.min, today) * DAY_WIDTH;
-
-  // Generate week markers
-  const weeks = useMemo(() => {
-    const w = [];
-    const d = new Date(allDates.min);
-    while (d <= allDates.max) {
-      if (d.getDay() === 1) {
-        w.push({
-          date: new Date(d),
-          x: daysBetween(allDates.min, d) * DAY_WIDTH,
-        });
-      }
-      d.setDate(d.getDate() + 1);
-    }
-    return w;
-  }, [allDates]);
-
-  return (
-    <div
-      style={{
-        background: '#fff',
-        borderRadius: 16,
-        overflow: 'hidden',
-        boxShadow: '0 2px 12px #2c181008',
-        border: `1px solid ${BRAND.creme}`,
-      }}
-    >
-      {/* Filters */}
-      <div
-        style={{
-          padding: '16px 20px',
-          display: 'flex',
-          gap: 12,
-          flexWrap: 'wrap',
-          alignItems: 'center',
-          borderBottom: `1px solid ${BRAND.creme}`,
-          background: BRAND.offWhite,
-        }}
-      >
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Icon name="filter" size={16} color={BRAND.caramelo} />
-          <span
-            style={{ fontSize: 13, fontWeight: 600, color: BRAND.caramelo }}
-          >
-            Filtros:
-          </span>
-        </div>
-        <select
-          value={filter.priority}
-          onChange={(e) =>
-            setFilter((f) => ({ ...f, priority: e.target.value }))
-          }
-          style={selectStyle}
-        >
-          <option value="all">Todas Prioridades</option>
-          {[1, 2, 3, 4, 5, 6, 7].map((p) => (
-            <option key={p} value={p}>
-              Prioridade {p}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filter.status}
-          onChange={(e) => setFilter((f) => ({ ...f, status: e.target.value }))}
-          style={selectStyle}
-        >
-          <option value="all">Todos Status</option>
-          {Object.entries(STATUS_LABELS).map(([k, v]) => (
-            <option key={k} value={k}>
-              {v}
-            </option>
-          ))}
-        </select>
-        <select
-          value={filter.responsavel}
-          onChange={(e) =>
-            setFilter((f) => ({ ...f, responsavel: e.target.value }))
-          }
-          style={selectStyle}
-        >
-          <option value="all">Todos Responsáveis</option>
-          {responsaveis.map((r) => (
-            <option key={r} value={r}>
-              {r}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {/* Gantt body */}
-      <div style={{ display: 'flex', overflow: 'hidden' }}>
-        {/* Task labels */}
-        <div
-          style={{
-            width: LABEL_WIDTH,
-            minWidth: LABEL_WIDTH,
-            borderRight: `2px solid ${BRAND.creme}`,
-            background: BRAND.offWhite,
-          }}
-        >
-          <div
-            style={{
-              height: HEADER_HEIGHT,
-              display: 'flex',
-              alignItems: 'center',
-              padding: '0 16px',
-              borderBottom: `1px solid ${BRAND.creme}`,
-            }}
-          >
-            <span
-              style={{
-                fontSize: 12,
-                fontWeight: 700,
-                color: BRAND.cafeEscuro,
-                textTransform: 'uppercase',
-                letterSpacing: 0.8,
-              }}
-            >
-              Atividade
-            </span>
-          </div>
-          {filtered.map((t, i) => (
-            <div
-              key={t.id}
-              onMouseEnter={() => setHoveredTask(t.id)}
-              onMouseLeave={() => setHoveredTask(null)}
-              style={{
-                height: ROW_HEIGHT,
-                display: 'flex',
-                alignItems: 'center',
-                padding: '0 12px',
-                gap: 8,
-                borderBottom: `1px solid ${BRAND.creme}44`,
-                background:
-                  hoveredTask === t.id
-                    ? `${BRAND.douradoCafe}10`
-                    : i % 2 === 0
-                    ? '#fff'
-                    : BRAND.offWhite,
-                cursor: 'default',
-                transition: 'background 0.15s',
-              }}
-            >
-              <span
-                style={{
-                  width: 22,
-                  height: 18,
-                  borderRadius: 4,
-                  background: `${STATUS_COLORS[t.status]}22`,
-                  color: STATUS_COLORS[t.status],
-                  fontSize: 10,
-                  fontWeight: 700,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  flexShrink: 0,
-                }}
-              >
-                P{t.priority}
-              </span>
-              <span
-                style={{
-                  fontSize: 12,
-                  color: BRAND.cafeEscuro,
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                  lineHeight: 1.2,
-                }}
-              >
-                {t.task}
-              </span>
-            </div>
-          ))}
-        </div>
-
-        {/* Chart area */}
-        <div
-          ref={containerRef}
-          style={{ flex: 1, overflowX: 'auto', overflowY: 'hidden' }}
-          onScroll={(e) => setScrollLeft(e.target.scrollLeft)}
-        >
-          <div
-            style={{
-              width: chartWidth,
-              minWidth: '100%',
-              position: 'relative',
-            }}
-          >
-            {/* Header with dates */}
-            <div
-              style={{
-                height: HEADER_HEIGHT,
-                display: 'flex',
-                alignItems: 'flex-end',
-                borderBottom: `1px solid ${BRAND.creme}`,
-                position: 'relative',
-              }}
-            >
-              {weeks.map((w, i) => (
-                <div
-                  key={i}
-                  style={{
-                    position: 'absolute',
-                    left: w.x,
-                    bottom: 4,
-                    fontSize: 10,
-                    color: BRAND.caramelo,
-                    fontWeight: 600,
-                    whiteSpace: 'nowrap',
-                    transform: 'translateX(-50%)',
-                  }}
-                >
-                  {w.date.toLocaleDateString('pt-BR', {
-                    day: '2-digit',
-                    month: 'short',
-                  })}
-                </div>
-              ))}
-            </div>
-
-            {/* Task bars */}
-            {filtered.map((t, i) => {
-              const x = daysBetween(allDates.min, t.startDate) * DAY_WIDTH;
-              const w = Math.max(t.duration * DAY_WIDTH - 4, 12);
-              const barColor = STATUS_COLORS[t.status];
-              const progressW = (t.progress / 100) * w;
-
-              return (
-                <div
-                  key={t.id}
-                  onMouseEnter={() => setHoveredTask(t.id)}
-                  onMouseLeave={() => setHoveredTask(null)}
-                  style={{
-                    height: ROW_HEIGHT,
-                    position: 'relative',
-                    borderBottom: `1px solid ${BRAND.creme}44`,
-                    background:
-                      hoveredTask === t.id
-                        ? `${BRAND.douradoCafe}10`
-                        : i % 2 === 0
-                        ? '#fff'
-                        : `${BRAND.offWhite}88`,
-                    transition: 'background 0.15s',
-                  }}
-                >
-                  {/* Week grid lines */}
-                  {weeks.map((wk, j) => (
-                    <div
-                      key={j}
-                      style={{
-                        position: 'absolute',
-                        left: wk.x,
-                        top: 0,
-                        bottom: 0,
-                        width: 1,
-                        background: `${BRAND.creme}88`,
-                      }}
-                    />
-                  ))}
-
-                  {/* Bar background */}
-                  <div
-                    style={{
-                      position: 'absolute',
-                      left: x,
-                      top: 6,
-                      width: w,
-                      height: ROW_HEIGHT - 12,
-                      borderRadius: 6,
-                      background: `${barColor}25`,
-                      border: `1px solid ${barColor}44`,
-                    }}
-                  />
-                  {/* Progress fill */}
-                  <div
-                    style={{
-                      position: 'absolute',
-                      left: x,
-                      top: 6,
-                      width: progressW,
-                      height: ROW_HEIGHT - 12,
-                      borderRadius: t.progress >= 100 ? 6 : '6px 0 0 6px',
-                      background: `linear-gradient(90deg, ${barColor}cc, ${barColor}88)`,
-                      transition: 'width 0.5s ease',
-                    }}
-                  />
-                  {/* Progress label */}
-                  {t.progress > 0 && (
-                    <span
-                      style={{
-                        position: 'absolute',
-                        left: x + w + 6,
-                        top: '50%',
-                        transform: 'translateY(-50%)',
-                        fontSize: 10,
-                        fontWeight: 700,
-                        color: barColor,
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {t.progress}%
-                    </span>
-                  )}
-
-                  {/* Tooltip on hover */}
-                  {hoveredTask === t.id && (
-                    <div
-                      style={{
-                        position: 'absolute',
-                        left: x + w / 2,
-                        top: -68,
-                        transform: 'translateX(-50%)',
-                        background: BRAND.cafeEscuro,
-                        color: '#fff',
-                        padding: '8px 14px',
-                        borderRadius: 10,
-                        fontSize: 11,
-                        lineHeight: 1.5,
-                        whiteSpace: 'nowrap',
-                        zIndex: 100,
-                        boxShadow: '0 8px 24px #2c181040',
-                        pointerEvents: 'none',
-                      }}
-                    >
-                      <strong>{t.task}</strong>
-                      <br />
-                      {formatDate(t.startDate)} → {formatDate(t.endDate)} |{' '}
-                      {t.progress}% | {t.responsavel}
-                      <div
-                        style={{
-                          position: 'absolute',
-                          bottom: -5,
-                          left: '50%',
-                          transform: 'translateX(-50%)',
-                          width: 10,
-                          height: 10,
-                          background: BRAND.cafeEscuro,
-                          rotate: '45deg',
-                        }}
-                      />
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-
-            {/* Today line */}
-            {todayX > 0 && todayX < chartWidth && (
-              <div
-                style={{
-                  position: 'absolute',
-                  left: todayX,
-                  top: 0,
-                  bottom: 0,
-                  width: 2,
-                  background: BRAND.vermelho,
-                  zIndex: 50,
-                  opacity: 0.7,
-                }}
-              >
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: 0,
-                    left: -18,
-                    background: BRAND.vermelho,
-                    color: '#fff',
-                    fontSize: 9,
-                    padding: '2px 6px',
-                    borderRadius: 4,
-                    fontWeight: 700,
-                    whiteSpace: 'nowrap',
-                  }}
-                >
-                  HOJE
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Legend */}
-      <div
-        style={{
-          padding: '12px 20px',
-          display: 'flex',
-          gap: 16,
-          flexWrap: 'wrap',
-          borderTop: `1px solid ${BRAND.creme}`,
-          background: BRAND.offWhite,
-        }}
-      >
-        {Object.entries(STATUS_LABELS).map(([k, v]) => (
-          <div
-            key={k}
-            style={{ display: 'flex', alignItems: 'center', gap: 6 }}
-          >
-            <div
-              style={{
-                width: 12,
-                height: 12,
-                borderRadius: 3,
-                background: STATUS_COLORS[k],
-              }}
-            />
-            <span style={{ fontSize: 11, color: BRAND.caramelo }}>{v}</span>
-          </div>
-        ))}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div style={{ width: 12, height: 2, background: BRAND.vermelho }} />
-          <span style={{ fontSize: 11, color: BRAND.caramelo }}>Hoje</span>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const selectStyle = {
-  padding: '6px 12px',
-  borderRadius: 8,
-  border: `1px solid ${BRAND.creme}`,
-  fontSize: 12,
-  color: BRAND.cafeEscuro,
-  background: '#fff',
-  cursor: 'pointer',
-  outline: 'none',
-};
-
-// ─────────────────────────────────────────────
-// AI INSIGHTS MODULE (uses Anthropic API)
-// ─────────────────────────────────────────────
-const AIInsightsPanel = ({ obra, tarefas, allObras, allTarefas }) => {
-  const [insights, setInsights] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [whatsappMsg, setWhatsappMsg] = useState(null);
-
-  const generateInsights = async () => {
-    setLoading(true);
-    const metrics = calcObraMetrics(tarefas);
-    const atrasadas = tarefas.filter((t) => t.status === 'atrasado');
-    const emAndamento = tarefas.filter((t) => t.status === 'em_andamento');
-    const criticas = tarefas.filter(
-      (t) => t.priority <= 3 && t.status !== 'concluido'
-    );
-    const today = new Date();
-    const diasRestantes = daysBetween(today, obra.prazoFinal);
-
-    const prompt = `Você é um consultor de gestão de implantações de franquias do Ponto Alpha Café. Analise esta obra e gere insights executivos em português brasileiro. Responda APENAS com JSON válido, sem markdown.
-
-OBRA: ${obra.nome} — ${obra.cidade}
-Responsável: ${obra.responsavel}
-Prazo Final: ${formatDate(obra.prazoFinal)} (${diasRestantes} dias restantes)
-Avanço Físico: ${metrics.avancoFisico.toFixed(1)}%
-PPC: ${metrics.ppc.toFixed(1)}%
-
-RESUMO:
-- Total tarefas: ${metrics.total}
-- Concluídas: ${metrics.concluidas}
-- Em andamento: ${metrics.emAndamento}
-- Pendentes: ${metrics.pendentes}
-- Atrasadas: ${metrics.atrasadas}
-- Não iniciadas: ${metrics.naoIniciadas}
-
-TAREFAS ATRASADAS: ${atrasadas.map((t) => t.task).join(', ') || 'nenhuma'}
-TAREFAS CRÍTICAS (P1-P3 não concluídas): ${
-      criticas.map((t) => `${t.task} (${t.progress}%)`).join(', ') || 'nenhuma'
-    }
-
-Gere um JSON com esta estrutura exata:
-{"situacao":"texto sobre situação geral da obra (2-3 frases)","riscos":["risco 1","risco 2","risco 3"],"prioridades":["prioridade 1","prioridade 2","prioridade 3"],"acoes":["ação imediata 1","ação 2","ação 3"],"whatsapp":"mensagem pronta para WhatsApp com resumo executivo da obra, emojis e formatação para envio direto"}`;
-
-    try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'claude-sonnet-4-20250514',
-          max_tokens: 1000,
-          messages: [{ role: 'user', content: prompt }],
-        }),
-      });
-      const data = await response.json();
-      const text = data.content?.map((c) => c.text || '').join('') || '';
-      const clean = text.replace(/```json|```/g, '').trim();
-      const parsed = JSON.parse(clean);
-      setInsights(parsed);
-      setWhatsappMsg(parsed.whatsapp);
-    } catch (err) {
-      setInsights({
-        situacao: `A obra ${obra.nome} está com ${metrics.avancoFisico.toFixed(
-          1
-        )}% de avanço físico. ${
-          metrics.atrasadas > 0
-            ? `Existem ${metrics.atrasadas} tarefas atrasadas que precisam de atenção imediata.`
-            : 'O andamento está dentro do esperado.'
-        } ${
-          diasRestantes > 0
-            ? `Restam ${diasRestantes} dias para o prazo final.`
-            : `A obra já ultrapassou o prazo final em ${Math.abs(
-                diasRestantes
-              )} dias.`
-        }`,
-        riscos:
-          atrasadas.length > 0
-            ? [
-                `${atrasadas.length} tarefa(s) atrasada(s) podem impactar o cronograma`,
-                `Avanço de ${metrics.avancoFisico.toFixed(
-                  0
-                )}% pode ser insuficiente para o prazo`,
-                'Dependências bloqueadoras entre etapas',
-              ]
-            : [
-                'Monitorar tarefas em andamento para evitar atrasos',
-                'Garantir aprovações em tempo hábil',
-                'Acompanhar fornecedores e entregas',
-              ],
-        prioridades: criticas
-          .slice(0, 3)
-          .map((t) => `Concluir: ${t.task} (${t.progress}%)`),
-        acoes: [
-          'Reunião de alinhamento com responsáveis das tarefas atrasadas',
-          'Revisar cronograma de entregas dos fornecedores',
-          'Atualizar status das tarefas em andamento',
-        ],
-        whatsapp: `☕ *ALPHA IMPLANTAÇÕES*\n📍 ${
-          obra.nome
-        }\n\n📊 Avanço: ${metrics.avancoFisico.toFixed(0)}%\n✅ Concluídas: ${
-          metrics.concluidas
-        }/${metrics.total}\n⚠️ Atrasadas: ${
-          metrics.atrasadas
-        }\n📅 Prazo: ${formatDate(obra.prazoFinal)}\n\n${
-          metrics.atrasadas > 0
-            ? '🔴 Atenção: existem tarefas atrasadas!'
-            : '🟢 Obra no prazo.'
-        }`,
-      });
-      setWhatsappMsg(null);
-    }
-    setLoading(false);
-  };
-
-  useEffect(() => {
-    generateInsights();
-  }, [obra.id]);
-
-  if (loading) {
-    return (
-      <div
-        style={{
-          background: '#fff',
-          borderRadius: 16,
-          padding: 32,
-          textAlign: 'center',
-          border: `1px solid ${BRAND.creme}`,
-        }}
-      >
-        <div
-          style={{
-            width: 40,
-            height: 40,
-            border: `3px solid ${BRAND.creme}`,
-            borderTopColor: BRAND.douradoCafe,
-            borderRadius: '50%',
-            margin: '0 auto 16px',
-            animation: 'spin 1s linear infinite',
-          }}
-        />
-        <p style={{ color: BRAND.caramelo, fontSize: 14 }}>
-          Analisando dados da obra com IA...
-        </p>
-        <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
-      </div>
-    );
-  }
-
-  if (!insights) return null;
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-      {/* Situação */}
-      <div
-        style={{
-          background: `linear-gradient(135deg, ${BRAND.cafeEscuro}, ${BRAND.marromQuente})`,
-          borderRadius: 16,
-          padding: 24,
-          color: '#fff',
-        }}
-      >
-        <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 10,
-            marginBottom: 12,
-          }}
-        >
-          <div
-            style={{
-              width: 36,
-              height: 36,
-              borderRadius: 10,
-              background: '#ffffff22',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-            }}
-          >
-            <Icon name="ai" size={20} color={BRAND.douradoCafe} />
-          </div>
-          <div>
-            <h3
-              style={{
-                margin: 0,
-                fontSize: 16,
-                fontWeight: 700,
-                fontFamily: "'DM Serif Display', serif",
-              }}
-            >
-              Análise da IA
-            </h3>
-            <span style={{ fontSize: 11, opacity: 0.7 }}>Atualizado agora</span>
-          </div>
-          <button
-            onClick={generateInsights}
-            style={{
-              marginLeft: 'auto',
-              background: '#ffffff22',
-              border: 'none',
-              borderRadius: 8,
-              padding: '6px 12px',
-              color: '#fff',
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 4,
-              fontSize: 12,
-            }}
-          >
-            <Icon name="refresh" size={14} color="#fff" /> Atualizar
-          </button>
-        </div>
-        <p style={{ fontSize: 14, lineHeight: 1.7, margin: 0, opacity: 0.95 }}>
-          {insights.situacao}
-        </p>
-      </div>
-
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
-          gap: 16,
-        }}
-      >
-        {/* Riscos */}
-        <div
-          style={{
-            background: '#fff',
-            borderRadius: 16,
-            padding: 20,
-            border: `1px solid ${BRAND.creme}`,
-          }}
-        >
-          <h4
-            style={{
-              margin: '0 0 12px',
-              fontSize: 14,
-              fontWeight: 700,
-              color: BRAND.vermelho,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <Icon name="alert" size={16} color={BRAND.vermelho} /> Riscos
-            Identificados
-          </h4>
-          {insights.riscos?.map((r, i) => (
-            <div
-              key={i}
-              style={{
-                padding: '8px 0',
-                borderBottom:
-                  i < insights.riscos.length - 1
-                    ? `1px solid ${BRAND.creme}`
-                    : 'none',
-                fontSize: 13,
-                color: BRAND.cafeEscuro,
-                display: 'flex',
-                gap: 8,
-              }}
-            >
-              <span
-                style={{
-                  color: BRAND.vermelho,
-                  fontWeight: 700,
-                  flexShrink: 0,
-                }}
-              >
-                {i + 1}.
-              </span>
-              {r}
-            </div>
-          ))}
-        </div>
-
-        {/* Prioridades */}
-        <div
-          style={{
-            background: '#fff',
-            borderRadius: 16,
-            padding: 20,
-            border: `1px solid ${BRAND.creme}`,
-          }}
-        >
-          <h4
-            style={{
-              margin: '0 0 12px',
-              fontSize: 14,
-              fontWeight: 700,
-              color: BRAND.douradoCafe,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <Icon name="check" size={16} color={BRAND.douradoCafe} />{' '}
-            Prioridades
-          </h4>
-          {insights.prioridades?.map((p, i) => (
-            <div
-              key={i}
-              style={{
-                padding: '8px 0',
-                borderBottom:
-                  i < insights.prioridades.length - 1
-                    ? `1px solid ${BRAND.creme}`
-                    : 'none',
-                fontSize: 13,
-                color: BRAND.cafeEscuro,
-                display: 'flex',
-                gap: 8,
-              }}
-            >
-              <span
-                style={{
-                  color: BRAND.douradoCafe,
-                  fontWeight: 700,
-                  flexShrink: 0,
-                }}
-              >
-                {i + 1}.
-              </span>
-              {p}
-            </div>
-          ))}
-        </div>
-
-        {/* Ações */}
-        <div
-          style={{
-            background: '#fff',
-            borderRadius: 16,
-            padding: 20,
-            border: `1px solid ${BRAND.creme}`,
-          }}
-        >
-          <h4
-            style={{
-              margin: '0 0 12px',
-              fontSize: 14,
-              fontWeight: 700,
-              color: BRAND.verdeFolha,
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-            }}
-          >
-            <Icon name="arrow" size={16} color={BRAND.verdeFolha} /> Próximos
-            Passos
-          </h4>
-          {insights.acoes?.map((a, i) => (
-            <div
-              key={i}
-              style={{
-                padding: '8px 0',
-                borderBottom:
-                  i < insights.acoes.length - 1
-                    ? `1px solid ${BRAND.creme}`
-                    : 'none',
-                fontSize: 13,
-                color: BRAND.cafeEscuro,
-                display: 'flex',
-                gap: 8,
-              }}
-            >
-              <span
-                style={{
-                  color: BRAND.verdeFolha,
-                  fontWeight: 700,
-                  flexShrink: 0,
-                }}
-              >
-                →
-              </span>
-              {a}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* WhatsApp message */}
-      {insights.whatsapp && (
-        <div
-          style={{
-            background: '#dcf8c6',
-            borderRadius: 16,
-            padding: 20,
-            border: '1px solid #b5e4a0',
-          }}
-        >
-          <div
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 8,
-              marginBottom: 12,
-            }}
-          >
-            <Icon name="whatsapp" size={18} color="#25D366" />
-            <h4
-              style={{
-                margin: 0,
-                fontSize: 14,
-                fontWeight: 700,
-                color: '#1b5e20',
-              }}
-            >
-              Mensagem para WhatsApp
-            </h4>
-            <button
-              onClick={() => navigator.clipboard?.writeText(insights.whatsapp)}
-              style={{
-                marginLeft: 'auto',
-                background: '#25D366',
-                border: 'none',
-                borderRadius: 8,
-                padding: '6px 14px',
-                color: '#fff',
-                cursor: 'pointer',
-                fontSize: 12,
-                fontWeight: 600,
-              }}
-            >
-              Copiar
-            </button>
-          </div>
-          <pre
-            style={{
-              margin: 0,
-              fontSize: 13,
-              lineHeight: 1.6,
-              color: '#1b3a1b',
-              whiteSpace: 'pre-wrap',
-              fontFamily: 'inherit',
-            }}
-          >
-            {insights.whatsapp}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-};
-
-// ─────────────────────────────────────────────
-// OBRA DETAIL VIEW
-// ─────────────────────────────────────────────
-const ObraDetail = ({ obra, tarefas, onBack, allObras, allTarefas }) => {
-  const [activeTab, setActiveTab] = useState('dashboard');
-  const metrics = useMemo(() => calcObraMetrics(tarefas), [tarefas]);
-  const today = new Date();
-  const diasRestantes = daysBetween(today, obra.prazoFinal);
-
-  const obraStatus =
-    diasRestantes < 0
-      ? 'atrasado'
-      : diasRestantes < 14
-      ? 'pendente'
-      : 'em_andamento';
-
-  const tabs = [
-    { id: 'dashboard', label: 'Dashboard', icon: 'chart' },
-    { id: 'gantt', label: 'Cronograma Gantt', icon: 'gantt' },
-    { id: 'ai', label: 'IA Insights', icon: 'ai' },
-    { id: 'tarefas', label: 'Tarefas', icon: 'check' },
-    { id: 'whatsapp', label: 'Relatórios', icon: 'whatsapp' },
-  ];
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      {/* Header */}
-      <div
-        style={{
-          background: `linear-gradient(135deg, ${BRAND.cafeEscuro}, ${BRAND.marromQuente}ee)`,
-          borderRadius: 20,
-          padding: '24px 28px',
-          color: '#fff',
-          position: 'relative',
-          overflow: 'hidden',
-        }}
-      >
-        <div
-          style={{
-            position: 'absolute',
-            top: -20,
-            right: -20,
-            width: 120,
-            height: 120,
-            borderRadius: '50%',
-            background: `${BRAND.douradoCafe}15`,
-          }}
-        />
-        <div
-          style={{
-            position: 'absolute',
-            bottom: -30,
-            right: 40,
-            width: 80,
-            height: 80,
-            borderRadius: '50%',
-            background: `${BRAND.douradoCafe}10`,
-          }}
-        />
-        <button
-          onClick={onBack}
-          style={{
-            background: '#ffffff22',
-            border: 'none',
-            borderRadius: 8,
-            padding: '6px 14px',
-            color: '#fff',
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            fontSize: 13,
-            marginBottom: 16,
-          }}
-        >
-          <Icon name="back" size={16} color="#fff" /> Voltar
-        </button>
-        <div
-          style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            justifyContent: 'space-between',
-            alignItems: 'flex-start',
-            gap: 16,
-          }}
-        >
-          <div>
-            <h1
-              style={{
-                margin: 0,
-                fontSize: 24,
-                fontWeight: 700,
-                fontFamily: "'DM Serif Display', serif",
-              }}
-            >
-              {obra.nome}
-            </h1>
-            <p style={{ margin: '6px 0 0', fontSize: 14, opacity: 0.8 }}>
-              📍 {obra.cidade} — {obra.endereco}
-            </p>
-            <p style={{ margin: '4px 0 0', fontSize: 13, opacity: 0.7 }}>
-              👤 Responsável: {obra.responsavel} | 📅 Prazo:{' '}
-              {formatDate(obra.prazoFinal)}
-            </p>
-          </div>
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <div
-              style={{
-                background: '#ffffff22',
-                borderRadius: 12,
-                padding: '12px 20px',
-                textAlign: 'center',
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 28,
-                  fontWeight: 800,
-                  fontFamily: "'DM Serif Display', serif",
-                }}
-              >
-                {metrics.avancoFisico.toFixed(0)}%
-              </div>
-              <div style={{ fontSize: 11, opacity: 0.7 }}>Avanço Físico</div>
-            </div>
-            <div
-              style={{
-                background: '#ffffff22',
-                borderRadius: 12,
-                padding: '12px 20px',
-                textAlign: 'center',
-              }}
-            >
-              <div
-                style={{
-                  fontSize: 28,
-                  fontWeight: 800,
-                  color: diasRestantes < 0 ? '#ff6b6b' : BRAND.verdeClaro,
-                  fontFamily: "'DM Serif Display', serif",
-                }}
-              >
-                {diasRestantes}
-              </div>
-              <div style={{ fontSize: 11, opacity: 0.7 }}>Dias Restantes</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Tabs */}
-      <div
-        style={{ display: 'flex', gap: 4, overflowX: 'auto', padding: '0 4px' }}
-      >
-        {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            onClick={() => setActiveTab(tab.id)}
-            style={{
-              padding: '10px 18px',
-              borderRadius: 10,
-              border: 'none',
-              background: activeTab === tab.id ? BRAND.cafeEscuro : '#fff',
-              color: activeTab === tab.id ? '#fff' : BRAND.caramelo,
-              fontSize: 13,
-              fontWeight: 600,
-              cursor: 'pointer',
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              whiteSpace: 'nowrap',
-              transition: 'all 0.2s',
-              boxShadow:
-                activeTab === tab.id
-                  ? `0 4px 12px ${BRAND.cafeEscuro}40`
-                  : '0 1px 4px #0001',
-            }}
-          >
-            <Icon
-              name={tab.icon}
-              size={16}
-              color={activeTab === tab.id ? BRAND.douradoCafe : BRAND.caramelo}
-            />
-            {tab.label}
-          </button>
-        ))}
-      </div>
-
-      {/* Tab content */}
-      {activeTab === 'dashboard' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
-              gap: 12,
-            }}
-          >
-            <KPICard
-              label="PPC"
-              value={`${metrics.ppc.toFixed(0)}%`}
-              subtitle="Planos Concluídos"
-              icon="check"
-              color={BRAND.verdeFolha}
-              small
-            />
-            <KPICard
-              label="Concluídas"
-              value={metrics.concluidas}
-              subtitle={`de ${metrics.total} tarefas`}
-              icon="check"
-              color={BRAND.verdeFolha}
-              small
-            />
-            <KPICard
-              label="Em Andamento"
-              value={metrics.emAndamento}
-              icon="clock"
-              color={BRAND.douradoCafe}
-              small
-            />
-            <KPICard
-              label="Atrasadas"
-              value={metrics.atrasadas}
-              icon="alert"
-              color={BRAND.vermelho}
-              small
-            />
-            <KPICard
-              label="Pendentes"
-              value={metrics.pendentes}
-              icon="calendar"
-              color={BRAND.amarelo}
-              small
-            />
-            <KPICard
-              label="Não Iniciadas"
-              value={metrics.naoIniciadas}
-              icon="file"
-              color="#9e9e9e"
-              small
-            />
-          </div>
-
-          {/* Progress by Priority */}
-          <div
-            style={{
-              background: '#fff',
-              borderRadius: 16,
-              padding: 24,
-              border: `1px solid ${BRAND.creme}`,
-            }}
-          >
-            <h3
-              style={{
-                margin: '0 0 16px',
-                fontSize: 16,
-                fontWeight: 700,
-                color: BRAND.cafeEscuro,
-                fontFamily: "'DM Serif Display', serif",
-              }}
-            >
-              Progresso por Prioridade
-            </h3>
-            {[1, 2, 3, 4, 5, 6, 7].map((p) => {
-              const pTasks = tarefas.filter((t) => t.priority === p);
-              if (!pTasks.length) return null;
-              const done = pTasks.filter(
-                (t) => t.status === 'concluido'
-              ).length;
-              const pct = (done / pTasks.length) * 100;
-              return (
-                <div
-                  key={p}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 12,
-                    marginBottom: 12,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: 12,
-                      fontWeight: 700,
-                      color: BRAND.caramelo,
-                      minWidth: 90,
-                    }}
-                  >
-                    Prioridade {p}
-                  </span>
-                  <div style={{ flex: 1 }}>
-                    <ProgressBar value={pct} height={10} />
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 11,
-                      color: BRAND.caramelo,
-                      minWidth: 50,
-                    }}
-                  >
-                    {done}/{pTasks.length}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Tasks by Category */}
-          <div
-            style={{
-              background: '#fff',
-              borderRadius: 16,
-              padding: 24,
-              border: `1px solid ${BRAND.creme}`,
-            }}
-          >
-            <h3
-              style={{
-                margin: '0 0 16px',
-                fontSize: 16,
-                fontWeight: 700,
-                color: BRAND.cafeEscuro,
-                fontFamily: "'DM Serif Display', serif",
-              }}
-            >
-              Progresso por Categoria
-            </h3>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: 12,
-              }}
-            >
-              {Object.entries(_.groupBy(tarefas, 'category')).map(
-                ([cat, tasks]) => {
-                  const done = tasks.filter(
-                    (t) => t.status === 'concluido'
-                  ).length;
-                  const pct = (done / tasks.length) * 100;
-                  return (
-                    <div
-                      key={cat}
-                      style={{
-                        padding: 12,
-                        borderRadius: 10,
-                        background: BRAND.offWhite,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          marginBottom: 6,
-                        }}
-                      >
-                        <span
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 600,
-                            color: BRAND.cafeEscuro,
-                          }}
-                        >
-                          {cat}
-                        </span>
-                        <span style={{ fontSize: 11, color: BRAND.caramelo }}>
-                          {done}/{tasks.length}
-                        </span>
-                      </div>
-                      <ProgressBar value={pct} height={6} showLabel={false} />
-                    </div>
-                  );
-                }
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'gantt' && <GanttChart tarefas={tarefas} obra={obra} />}
-
-      {activeTab === 'ai' && (
-        <AIInsightsPanel
-          obra={obra}
-          tarefas={tarefas}
-          allObras={allObras}
-          allTarefas={allTarefas}
-        />
-      )}
-
-      {activeTab === 'tarefas' && (
-        <div
-          style={{
-            background: '#fff',
-            borderRadius: 16,
-            overflow: 'hidden',
-            border: `1px solid ${BRAND.creme}`,
-          }}
-        >
-          <div style={{ overflowX: 'auto' }}>
-            <table
-              style={{
-                width: '100%',
-                borderCollapse: 'collapse',
-                fontSize: 13,
-              }}
-            >
-              <thead>
-                <tr style={{ background: BRAND.cafeEscuro, color: '#fff' }}>
-                  {[
-                    'P',
-                    'Tarefa',
-                    'Categoria',
-                    'Status',
-                    'Progresso',
-                    'Início',
-                    'Prazo',
-                    'Responsável',
-                  ].map((h) => (
-                    <th
-                      key={h}
-                      style={{
-                        padding: '12px 14px',
-                        textAlign: 'left',
-                        fontSize: 11,
-                        fontWeight: 700,
-                        textTransform: 'uppercase',
-                        letterSpacing: 0.5,
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {tarefas.map((t, i) => (
-                  <tr
-                    key={t.id}
-                    style={{
-                      borderBottom: `1px solid ${BRAND.creme}`,
-                      background: i % 2 === 0 ? '#fff' : BRAND.offWhite,
-                    }}
-                  >
-                    <td style={{ padding: '10px 14px' }}>
-                      <span
-                        style={{
-                          background: `${BRAND.douradoCafe}22`,
-                          color: BRAND.cafeEscuro,
-                          padding: '2px 8px',
-                          borderRadius: 6,
-                          fontWeight: 700,
-                          fontSize: 11,
-                        }}
-                      >
-                        {t.priority}
-                      </span>
-                    </td>
-                    <td
-                      style={{
-                        padding: '10px 14px',
-                        fontWeight: 500,
-                        maxWidth: 250,
-                      }}
-                    >
-                      {t.task}
-                    </td>
-                    <td
-                      style={{
-                        padding: '10px 14px',
-                        color: BRAND.caramelo,
-                        fontSize: 12,
-                      }}
-                    >
-                      {t.category}
-                    </td>
-                    <td style={{ padding: '10px 14px' }}>
-                      <StatusBadge status={t.status} small />
-                    </td>
-                    <td style={{ padding: '10px 14px', width: 120 }}>
-                      <ProgressBar value={t.progress} height={6} />
-                    </td>
-                    <td
-                      style={{
-                        padding: '10px 14px',
-                        color: BRAND.caramelo,
-                        fontSize: 12,
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {formatDate(t.startDate)}
-                    </td>
-                    <td
-                      style={{
-                        padding: '10px 14px',
-                        color: BRAND.caramelo,
-                        fontSize: 12,
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {formatDate(t.endDate)}
-                    </td>
-                    <td style={{ padding: '10px 14px', fontSize: 12 }}>
-                      {t.responsavel}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'whatsapp' && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div
-            style={{
-              background: '#fff',
-              borderRadius: 16,
-              padding: 24,
-              border: `1px solid ${BRAND.creme}`,
-            }}
-          >
-            <h3
-              style={{
-                margin: '0 0 16px',
-                fontSize: 16,
-                fontWeight: 700,
-                color: BRAND.cafeEscuro,
-                fontFamily: "'DM Serif Display', serif",
-              }}
-            >
-              Relatórios Automáticos
-            </h3>
-            <div
-              style={{
-                display: 'grid',
-                gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))',
-                gap: 12,
-              }}
-            >
-              {[
-                {
-                  title: 'Resumo Executivo',
-                  desc: 'Visão geral da obra com indicadores principais',
-                  icon: 'chart',
-                },
-                {
-                  title: 'Relatório Semanal',
-                  desc: 'Evolução da última semana com comparativos',
-                  icon: 'calendar',
-                },
-                {
-                  title: 'Pendências',
-                  desc: 'Lista de todas as tarefas pendentes e atrasadas',
-                  icon: 'alert',
-                },
-                {
-                  title: 'Urgências',
-                  desc: 'Tarefas críticas que precisam de ação imediata',
-                  icon: 'clock',
-                },
-                {
-                  title: 'Comparativo',
-                  desc: 'Comparação entre obras em andamento',
-                  icon: 'building',
-                },
-                {
-                  title: 'Mensagem WhatsApp',
-                  desc: 'Gerar mensagem pronta para envio',
-                  icon: 'whatsapp',
-                },
-              ].map((r) => (
-                <button
-                  key={r.title}
-                  style={{
-                    padding: 18,
-                    borderRadius: 14,
-                    border: `1px solid ${BRAND.creme}`,
-                    background: BRAND.offWhite,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'all 0.2s',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.background = `${BRAND.douradoCafe}15`;
-                    e.currentTarget.style.borderColor = BRAND.douradoCafe;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.background = BRAND.offWhite;
-                    e.currentTarget.style.borderColor = BRAND.creme;
-                  }}
-                >
-                  <div
-                    style={{
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: 8,
-                      marginBottom: 8,
-                    }}
-                  >
-                    <Icon name={r.icon} size={18} color={BRAND.douradoCafe} />
-                    <span
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 700,
-                        color: BRAND.cafeEscuro,
-                      }}
-                    >
-                      {r.title}
-                    </span>
-                  </div>
-                  <span
-                    style={{
-                      fontSize: 12,
-                      color: BRAND.caramelo,
-                      lineHeight: 1.4,
-                    }}
-                  >
-                    {r.desc}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {/* Quick WhatsApp Preview */}
-          <div
-            style={{
-              background: '#dcf8c6',
-              borderRadius: 16,
-              padding: 20,
-              border: '1px solid #b5e4a0',
-            }}
-          >
-            <div
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-                marginBottom: 12,
-              }}
-            >
-              <Icon name="whatsapp" size={18} color="#25D366" />
-              <h4
-                style={{
-                  margin: 0,
-                  fontSize: 14,
-                  fontWeight: 700,
-                  color: '#1b5e20',
-                }}
-              >
-                Prévia WhatsApp — Resumo Semanal
-              </h4>
-              <button
-                onClick={() => {
-                  const msg = `☕ *PONTO ALPHA — IMPLANTAÇÕES*\n📍 ${
-                    obra.nome
-                  }\n📅 ${formatDate(
-                    new Date()
-                  )}\n\n📊 *Avanço:* ${metrics.avancoFisico.toFixed(
-                    0
-                  )}%\n✅ Concluídas: ${metrics.concluidas}/${
-                    metrics.total
-                  }\n🔄 Em andamento: ${metrics.emAndamento}\n⚠️ Atrasadas: ${
-                    metrics.atrasadas
-                  }\n📅 Prazo: ${formatDate(
-                    obra.prazoFinal
-                  )} (${diasRestantes}d)\n\n${
-                    metrics.atrasadas > 0
-                      ? '🔴 *Atenção:* Existem tarefas atrasadas!'
-                      : '🟢 Obra dentro do cronograma.'
-                  }\n\n_Alpha Implantações_`;
-                  navigator.clipboard?.writeText(msg);
-                }}
-                style={{
-                  marginLeft: 'auto',
-                  background: '#25D366',
-                  border: 'none',
-                  borderRadius: 8,
-                  padding: '6px 14px',
-                  color: '#fff',
-                  cursor: 'pointer',
-                  fontSize: 12,
-                  fontWeight: 600,
-                }}
-              >
-                Copiar
-              </button>
-            </div>
-            <pre
-              style={{
-                margin: 0,
-                fontSize: 13,
-                lineHeight: 1.7,
-                color: '#1b3a1b',
-                whiteSpace: 'pre-wrap',
-                fontFamily: 'inherit',
-              }}
-            >
-              {`☕ *PONTO ALPHA — IMPLANTAÇÕES*
-📍 ${obra.nome}
-📅 ${formatDate(new Date())}
-
-📊 *Avanço:* ${metrics.avancoFisico.toFixed(0)}%
-✅ Concluídas: ${metrics.concluidas}/${metrics.total}
-🔄 Em andamento: ${metrics.emAndamento}
-⚠️ Atrasadas: ${metrics.atrasadas}
-📅 Prazo: ${formatDate(obra.prazoFinal)} (${diasRestantes}d)
-
-${
-  metrics.atrasadas > 0
-    ? '🔴 *Atenção:* Existem tarefas atrasadas!'
-    : '🟢 Obra dentro do cronograma.'
 }
 
-_Alpha Implantações_`}
-            </pre>
-          </div>
-        </div>
-      )}
+function Bar({ pct, color, h = 6 }) {
+  return (
+    <div style={{ background: B.creme, borderRadius: 999, height: h, overflow: "hidden" }}>
+      <div style={{ width: Math.min(100, Math.max(0, pct)) + "%", height: "100%", background: color || B.caramelo, borderRadius: 999, transition: "width .4s" }} />
     </div>
   );
-};
+}
 
-// ─────────────────────────────────────────────
-// NEW OBRA MODAL
-// ─────────────────────────────────────────────
-const NovaObraModal = ({ onClose, onCreate }) => {
-  const [form, setForm] = useState({
-    nome: '',
-    cidade: '',
-    endereco: '',
-    responsavel: '',
-    prazoFinal: '',
-    observacoes: '',
+function KpiCard({ label, value, icon, color, sub }) {
+  return (
+    <div style={{ background: B.branco, borderRadius: 12, padding: "14px", flex: "1 1 120px", minWidth: 0, border: "1px solid " + B.creme, boxShadow: "0 1px 4px rgba(44,24,16,.04)" }}>
+      <div style={{ fontSize: 18, marginBottom: 2 }}>{icon}</div>
+      <div style={{ fontSize: 22, fontWeight: 800, color: color || B.cafe, fontFamily: "'Montserrat',sans-serif", lineHeight: 1.1 }}>{value}</div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, marginTop: 2, textTransform: "uppercase", letterSpacing: "0.5px" }}>{label}</div>
+      {sub && <div style={{ fontSize: 10, color: B.cinza, marginTop: 1 }}>{sub}</div>}
+    </div>
+  );
+}
+
+function Btn({ onClick, color, children, full, small, disabled, outline }) {
+  return (
+    <button onClick={onClick} disabled={disabled} style={{
+      padding: small ? "6px 12px" : "10px 18px", borderRadius: 8,
+      border: outline ? "2px solid " + (color || B.cafe) : "none",
+      background: disabled ? B.cinza : outline ? "white" : (color || B.cafe),
+      color: outline ? (color || B.cafe) : B.creme,
+      cursor: disabled ? "not-allowed" : "pointer", fontWeight: 700, fontSize: small ? 11 : 13,
+      width: full ? "100%" : "auto", display: "inline-flex", alignItems: "center", gap: 5,
+      fontFamily: "'Montserrat',sans-serif", minHeight: small ? 32 : 42, justifyContent: "center"
+    }}>
+      {children}
+    </button>
+  );
+}
+
+function Inp({ label, value, onChange, type = "text", placeholder = "" }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>{label}</label>
+      <input type={type} value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+        style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid " + B.creme, fontSize: 13, background: B.offwhite, boxSizing: "border-box", fontFamily: "'Montserrat',sans-serif", minHeight: 42 }} />
+    </div>
+  );
+}
+
+function Tabs({ tabs, active, onChange }) {
+  return (
+    <div style={{ display: "flex", gap: 4, overflowX: "auto", paddingBottom: 2, msOverflowStyle: "none", scrollbarWidth: "none" }}>
+      {tabs.map(t => (
+        <button key={t.id} onClick={() => onChange(t.id)} style={{
+          padding: "8px 14px", borderRadius: 8, border: "2px solid " + (active === t.id ? B.cafe : B.creme),
+          background: active === t.id ? B.cafe : "white", color: active === t.id ? B.creme : B.caramelo,
+          cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", minHeight: 38, flexShrink: 0,
+          fontFamily: "'Montserrat',sans-serif"
+        }}>{t.l}</button>
+      ))}
+    </div>
+  );
+}
+
+// ─── SVG CHARTS ──────────────────────────────────────────────────────────────
+function LineChartSVG({ data, dataKey, color }) {
+  if (!data || data.length < 2) return null;
+  const vals = data.map(d => d[dataKey]);
+  const max = Math.max(...vals, 1);
+  const W = 300, H = 120, PL = 30, PB = 20, PW = W - PL - 10, PH = H - PB - 10;
+  const pts = vals.map((v, i) => {
+    const x = PL + (i / (vals.length - 1)) * PW;
+    const y = 10 + (1 - v / max) * PH;
+    return x + "," + y;
+  }).join(" ");
+  return (
+    <svg width="100%" viewBox={"0 0 " + W + " " + H} style={{ overflow: "visible" }}>
+      <line x1={PL} y1={10} x2={PL} y2={10 + PH} stroke={B.creme} strokeWidth={1} />
+      <line x1={PL} y1={10 + PH} x2={PL + PW} y2={10 + PH} stroke={B.creme} strokeWidth={1} />
+      {[0, 25, 50, 75, 100].map(v => {
+        const y = 10 + (1 - v / 100) * PH;
+        return <g key={v}><line x1={PL - 4} y1={y} x2={PL + PW} y2={y} stroke={B.creme} strokeWidth={0.5} /><text x={PL - 6} y={y + 4} textAnchor="end" fontSize={8} fill={B.cinza}>{v}</text></g>;
+      })}
+      {data.map((d, i) => {
+        const x = PL + (i / (vals.length - 1)) * PW;
+        return <text key={i} x={x} y={H - 4} textAnchor="middle" fontSize={8} fill={B.cinza}>{d.semana}</text>;
+      })}
+      <polyline points={pts} fill="none" stroke={color} strokeWidth={2.5} strokeLinejoin="round" />
+      {vals.map((v, i) => {
+        const x = PL + (i / (vals.length - 1)) * PW;
+        const y = 10 + (1 - v / max) * PH;
+        return <circle key={i} cx={x} cy={y} r={3} fill={color} />;
+      })}
+    </svg>
+  );
+}
+
+function BarChartSVG({ data }) {
+  if (!data || !data.length) return null;
+  const max = Math.max(...data.map(d => d.avanco), 1);
+  const W = 300, H = 130, PL = 10, PB = 24, PW = W - PL - 10, PH = H - PB - 10;
+  const bw = PW / data.length;
+  return (
+    <svg width="100%" viewBox={"0 0 " + W + " " + H} style={{ overflow: "visible" }}>
+      {data.map((d, i) => {
+        const bh = (d.avanco / max) * PH;
+        const x = PL + i * bw + bw * 0.1;
+        const barW = bw * 0.8;
+        const y = 10 + PH - bh;
+        return (
+          <g key={i}>
+            <rect x={x} y={y} width={barW} height={bh} fill={B.caramelo} rx={3} />
+            <text x={x + barW / 2} y={y - 3} textAnchor="middle" fontSize={9} fill={B.cafe} fontWeight="bold">{d.avanco}%</text>
+            <text x={x + barW / 2} y={H - 6} textAnchor="middle" fontSize={8} fill={B.cinza}>{d.name}</text>
+          </g>
+        );
+      })}
+    </svg>
+  );
+}
+
+// ─── GANTT ────────────────────────────────────────────────────────────────────
+function Gantt({ tarefas, elap, baseline, filterP, filterS, svgRef }) {
+  const rows = tarefas.filter(tk => {
+    if (filterP !== "Todos" && String(tk.p) !== filterP) return false;
+    if (filterS !== "Todos" && tk.status !== filterS) return false;
+    return true;
   });
-
-  const handleSubmit = () => {
-    if (!form.nome || !form.cidade) return;
-    const newObra = {
-      id: `obra-${Date.now()}`,
-      ...form,
-      dataBase: new Date(),
-      prazoFinal: form.prazoFinal
-        ? new Date(form.prazoFinal)
-        : new Date(Date.now() + 120 * 86400000),
-      status: 'nao_iniciado',
-    };
-    onCreate(newObra);
-  };
-
-  const inputStyle = {
-    width: '100%',
-    padding: '10px 14px',
-    borderRadius: 10,
-    border: `1px solid ${BRAND.creme}`,
-    fontSize: 14,
-    color: BRAND.cafeEscuro,
-    outline: 'none',
-    background: BRAND.offWhite,
-    boxSizing: 'border-box',
-  };
-
-  const labelStyle = {
-    fontSize: 12,
-    fontWeight: 600,
-    color: BRAND.caramelo,
-    marginBottom: 4,
-    display: 'block',
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
-  };
-
+  const ROW = 34, LW = 185, DW = 9, MAX = 95, HH = 38, CW = MAX * DW;
+  const gc = (s) => ({ "Concluído": B.verde, "Em Andamento": B.latte, "Atrasado": B.vermelho, "Bloqueado": B.cinza }[s] || B.caramelo);
+  const weeks = Array.from({ length: Math.ceil(MAX / 7) }, (_, i) => i);
   return (
-    <div
-      style={{
-        position: 'fixed',
-        inset: 0,
-        background: '#00000066',
-        zIndex: 1000,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 20,
-      }}
-      onClick={onClose}
-    >
-      <div
-        onClick={(e) => e.stopPropagation()}
-        style={{
-          background: '#fff',
-          borderRadius: 20,
-          padding: 32,
-          maxWidth: 540,
-          width: '100%',
-          maxHeight: '90vh',
-          overflow: 'auto',
-          boxShadow: '0 20px 60px #0004',
-        }}
-      >
-        <div
+    <div style={{ overflowX: "auto", border: "1px solid " + B.creme, borderRadius: 10, background: B.branco, WebkitOverflowScrolling: "touch" }}>
+      <svg ref={svgRef} width={LW + CW + 16} height={HH + rows.length * ROW + 10} style={{ display: "block", fontFamily: "'Montserrat',sans-serif" }}>
+        <rect x={0} y={0} width={LW} height={HH} fill={B.cafe} />
+        <text x={10} y={25} fill={B.creme} fontSize={10} fontWeight="bold">TAREFA</text>
+        {weeks.map(w => (
+          <g key={w}>
+            <rect x={LW + w * 7 * DW} y={0} width={7 * DW} height={HH} fill={w % 2 === 0 ? B.cafe : B.marrom} />
+            <text x={LW + w * 7 * DW + 4} y={16} fill={B.dourado} fontSize={9} fontWeight="bold">S{w + 1}</text>
+            <text x={LW + w * 7 * DW + 4} y={30} fill={B.creme + "88"} fontSize={8}>D{w * 7}</text>
+          </g>
+        ))}
+        {rows.map((tk, i) => {
+          const y = HH + i * ROW, bx = LW + tk.s * DW, bw = Math.max(4, tk.d * DW);
+          const fw = bw * (tk.progresso / 100), c = gc(tk.status);
+          const blocked = isBlocked(tk, tarefas), dl = daysLeft(tk, elap);
+          return (
+            <g key={tk.id}>
+              <rect x={0} y={y} width={LW + CW + 16} height={ROW} fill={i % 2 === 0 ? B.offwhite : B.branco} />
+              <rect x={2} y={y + 11} width={3} height={ROW - 22} rx={1} fill={prioColor(tk.p)} />
+              <text x={13} y={y + ROW / 2 + 4} fontSize={10} fill={tk.status === "Atrasado" ? B.vermelho : B.cafe} fontWeight={tk.status === "Atrasado" ? "bold" : "normal"}>
+                {tk.t.length > 22 ? tk.t.slice(0, 22) + "…" : tk.t}
+              </text>
+              {weeks.map(w => <line key={w} x1={LW + w * 7 * DW} y1={y} x2={LW + w * 7 * DW} y2={y + ROW} stroke={B.creme} strokeWidth={0.5} />)}
+              {baseline && <rect x={bx} y={y + 10} width={bw} height={ROW - 20} rx={2} fill="none" stroke={B.cinza} strokeWidth={1} strokeDasharray="3,2" opacity={0.5} />}
+              <rect x={bx} y={y + 8} width={bw} height={ROW - 16} rx={3} fill={c + "28"} stroke={c} strokeWidth={0.5} />
+              {fw > 0 && <rect x={bx} y={y + 8} width={fw} height={ROW - 16} rx={3} fill={c} opacity={0.85} />}
+              {bw > 28 && <text x={bx + bw / 2} y={y + ROW / 2 + 4} textAnchor="middle" fontSize={9} fill={tk.progresso > 55 ? "white" : B.cafe} fontWeight="bold">{tk.progresso}%</text>}
+              {tk.status === "Atrasado" && <text x={bx + bw + 4} y={y + ROW / 2 + 4} fontSize={12} fill={B.vermelho}>⚠</text>}
+              {blocked && <text x={bx + bw + 4} y={y + ROW / 2 + 4} fontSize={12}>🔒</text>}
+              {dl <= 3 && dl >= 0 && tk.status !== "Concluído" && <text x={bx + bw + 4} y={y + ROW / 2 + 4} fontSize={10} fill={B.laranja}>⏰</text>}
+              <line x1={0} y1={y + ROW} x2={LW + CW + 16} y2={y + ROW} stroke={B.creme} strokeWidth={0.5} />
+            </g>
+          );
+        })}
+        {elap > 0 && elap < MAX && (
+          <>
+            <line x1={LW + elap * DW} y1={0} x2={LW + elap * DW} y2={HH + rows.length * ROW} stroke={B.vermelho} strokeWidth={2} strokeDasharray="4,3" />
+            <rect x={LW + elap * DW - 16} y={HH - 2} width={32} height={13} rx={3} fill={B.vermelho} />
+            <text x={LW + elap * DW} y={HH + 7} textAnchor="middle" fontSize={8} fill="white" fontWeight="bold">HOJE</text>
+          </>
+        )}
+      </svg>
+    </div>
+  );
+}
+
+// ─── LANDING PAGE ─────────────────────────────────────────────────────────────
+function LandingScreen({ onAccess }) {
+  const isMobile = useIsMobile();
+  return (
+    <div style={{
+      minHeight: "100vh", background: "linear-gradient(145deg, #1a0e08 0%, #2c1810 40%, #3d2214 70%, #4a3020 100%)",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+      padding: isMobile ? "32px 24px" : "48px 32px", position: "relative", overflow: "hidden"
+    }}>
+      {/* Decorative circles */}
+      <div style={{ position: "absolute", top: -80, right: -80, width: 320, height: 320, borderRadius: "50%", border: "1px solid rgba(196,164,120,.08)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", top: -40, right: -40, width: 200, height: 200, borderRadius: "50%", border: "1px solid rgba(196,164,120,.06)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", bottom: -100, left: -100, width: 400, height: 400, borderRadius: "50%", border: "1px solid rgba(196,164,120,.05)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", bottom: 60, left: 60, width: 200, height: 200, borderRadius: "50%", border: "1px solid rgba(196,164,120,.04)", pointerEvents: "none" }} />
+
+      {/* Content */}
+      <div style={{ textAlign: "center", zIndex: 1, maxWidth: 480, width: "100%" }}>
+        {/* Logo mark */}
+        <div style={{ marginBottom: 28 }}>
+          <div style={{
+            width: 72, height: 72, borderRadius: 20, margin: "0 auto 16px",
+            background: "linear-gradient(135deg, rgba(196,164,120,.2) 0%, rgba(196,164,120,.08) 100%)",
+            border: "1px solid rgba(196,164,120,.3)",
+            display: "flex", alignItems: "center", justifyContent: "center"
+          }}>
+            <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+              <rect x="4" y="14" width="28" height="3" rx="1.5" fill="#c4a478" opacity="0.9"/>
+              <rect x="4" y="20" width="20" height="3" rx="1.5" fill="#c4a478" opacity="0.6"/>
+              <rect x="4" y="26" width="24" height="3" rx="1.5" fill="#c4a478" opacity="0.4"/>
+              <circle cx="27" cy="10" r="5" stroke="#c4a478" strokeWidth="2" fill="none" opacity="0.8"/>
+              <line x1="27" y1="4" x2="27" y2="6" stroke="#c4a478" strokeWidth="2" strokeLinecap="round" opacity="0.8"/>
+            </svg>
+          </div>
+          <div style={{ fontSize: 9, letterSpacing: "3px", textTransform: "uppercase", color: "rgba(196,164,120,.5)", marginBottom: 8, fontWeight: 600 }}>
+            Grupo Alpha
+          </div>
+        </div>
+
+        {/* Title */}
+        <h1 style={{
+          fontFamily: "'Montserrat',sans-serif", fontWeight: 900,
+          fontSize: isMobile ? 32 : 42, color: "#f5ebe0", margin: "0 0 10px",
+          letterSpacing: "-0.5px", lineHeight: 1.15
+        }}>
+          Alpha<br />
+          <span style={{ color: "#c4a478" }}>Implantações</span>
+        </h1>
+
+        {/* Tagline */}
+        <p style={{
+          fontSize: isMobile ? 13 : 15, color: "rgba(245,235,224,.5)",
+          margin: "0 0 40px", lineHeight: 1.65, fontWeight: 400,
+          fontFamily: "'Montserrat',sans-serif"
+        }}>
+          Gestão inteligente de implantações<br />
+          <span style={{ color: "rgba(196,164,120,.7)", fontWeight: 600 }}>Ponto Alpha Café</span>
+        </p>
+
+        {/* Stats row */}
+        <div style={{ display: "flex", justifyContent: "center", gap: 28, marginBottom: 44 }}>
+          {[["37", "Tarefas"], ["3", "Obras Ativas"], ["IA", "Integrada"]].map(([v, l]) => (
+            <div key={l} style={{ textAlign: "center" }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 20, color: "#c4a478" }}>{v}</div>
+              <div style={{ fontSize: 9, color: "rgba(245,235,224,.35)", textTransform: "uppercase", letterSpacing: "1px", fontWeight: 600 }}>{l}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* CTA Button */}
+        <button
+          onClick={onAccess}
           style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            marginBottom: 24,
+            width: "100%", maxWidth: 320, padding: "16px 32px",
+            background: "linear-gradient(135deg, #c4a478 0%, #b8935e 100%)",
+            border: "none", borderRadius: 12, cursor: "pointer",
+            fontFamily: "'Montserrat',sans-serif", fontWeight: 800,
+            fontSize: 15, color: "#2c1810", letterSpacing: "0.3px",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            margin: "0 auto", transition: "opacity .2s"
           }}
+          onMouseOver={e => e.currentTarget.style.opacity = "0.92"}
+          onMouseOut={e => e.currentTarget.style.opacity = "1"}
         >
-          <h2
-            style={{
-              margin: 0,
-              fontSize: 22,
-              fontWeight: 700,
-              color: BRAND.cafeEscuro,
-              fontFamily: "'DM Serif Display', serif",
-            }}
-          >
-            Nova Implantação
-          </h2>
-          <button
-            onClick={onClose}
-            style={{
-              background: 'none',
-              border: 'none',
-              cursor: 'pointer',
-              padding: 4,
-            }}
-          >
-            <Icon name="close" size={20} color={BRAND.caramelo} />
-          </button>
-        </div>
+          Acessar o Sistema
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M3 8h10M9 4l4 4-4 4" stroke="#2c1810" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+        </button>
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          <div>
-            <label style={labelStyle}>Nome da Obra / Unidade</label>
-            <input
-              style={inputStyle}
-              placeholder="Ex: Ponto Alpha — Shopping XYZ"
-              value={form.nome}
-              onChange={(e) => setForm({ ...form, nome: e.target.value })}
-            />
-          </div>
-          <div
-            style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}
-          >
-            <div>
-              <label style={labelStyle}>Cidade</label>
-              <input
-                style={inputStyle}
-                placeholder="Ex: Brasília"
-                value={form.cidade}
-                onChange={(e) => setForm({ ...form, cidade: e.target.value })}
-              />
-            </div>
-            <div>
-              <label style={labelStyle}>Responsável</label>
-              <input
-                style={inputStyle}
-                placeholder="Ex: Licia"
-                value={form.responsavel}
-                onChange={(e) =>
-                  setForm({ ...form, responsavel: e.target.value })
-                }
-              />
-            </div>
-          </div>
-          <div>
-            <label style={labelStyle}>Endereço</label>
-            <input
-              style={inputStyle}
-              placeholder="Endereço completo"
-              value={form.endereco}
-              onChange={(e) => setForm({ ...form, endereco: e.target.value })}
-            />
-          </div>
-          <div>
-            <label style={labelStyle}>Prazo Final</label>
-            <input
-              style={inputStyle}
-              type="date"
-              value={form.prazoFinal}
-              onChange={(e) => setForm({ ...form, prazoFinal: e.target.value })}
-            />
-          </div>
-          <div>
-            <label style={labelStyle}>Observações</label>
-            <textarea
-              style={{ ...inputStyle, minHeight: 80, resize: 'vertical' }}
-              placeholder="Notas sobre a implantação..."
-              value={form.observacoes}
-              onChange={(e) =>
-                setForm({ ...form, observacoes: e.target.value })
-              }
-            />
-          </div>
-        </div>
-
-        <div style={{ display: 'flex', gap: 12, marginTop: 24 }}>
-          <button
-            onClick={onClose}
-            style={{
-              flex: 1,
-              padding: '12px 20px',
-              borderRadius: 10,
-              border: `1px solid ${BRAND.creme}`,
-              background: '#fff',
-              color: BRAND.caramelo,
-              fontSize: 14,
-              fontWeight: 600,
-              cursor: 'pointer',
-            }}
-          >
-            Cancelar
-          </button>
-          <button
-            onClick={handleSubmit}
-            style={{
-              flex: 1,
-              padding: '12px 20px',
-              borderRadius: 10,
-              border: 'none',
-              background: `linear-gradient(135deg, ${BRAND.cafeEscuro}, ${BRAND.marromQuente})`,
-              color: '#fff',
-              fontSize: 14,
-              fontWeight: 600,
-              cursor: 'pointer',
-              boxShadow: `0 4px 16px ${BRAND.cafeEscuro}40`,
-            }}
-          >
-            Criar Implantação
-          </button>
+        {/* Footer */}
+        <div style={{ marginTop: 48, fontSize: 10, color: "rgba(245,235,224,.2)", fontFamily: "'Montserrat',sans-serif", letterSpacing: "1px", textTransform: "uppercase" }}>
+          v2.3 · Ponto Alpha Café
         </div>
       </div>
     </div>
   );
-};
+}
 
-// ─────────────────────────────────────────────
-// MAIN APP COMPONENT
-// ─────────────────────────────────────────────
-export default function AlphaImplantacoes() {
-  const [data] = useState(() => generateDemoData());
-  const [selectedObra, setSelectedObra] = useState(null);
-  const [showNewModal, setShowNewModal] = useState(false);
-  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+// ─── LOGIN SCREEN ─────────────────────────────────────────────────────────────
+function LoginScreen({ onLogin, onSignup, onForgot }) {
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [erro, setErro] = useState("");
+  const [loading, setLoading] = useState(false);
+  const isMobile = useIsMobile();
 
-  const { obras, obrasTarefas } = data;
-
-  // Global metrics
-  const globalMetrics = useMemo(() => {
-    const allTasks = Object.values(obrasTarefas).flat();
-    const total = allTasks.length;
-    const concluidas = allTasks.filter((t) => t.status === 'concluido').length;
-    const atrasadas = allTasks.filter((t) => t.status === 'atrasado').length;
-    const emAndamento = allTasks.filter(
-      (t) => t.status === 'em_andamento'
-    ).length;
-    const avgProgress =
-      total > 0 ? allTasks.reduce((a, t) => a + t.progress, 0) / total : 0;
-
-    return {
-      total,
-      concluidas,
-      atrasadas,
-      emAndamento,
-      avgProgress,
-      obrasTotal: obras.length,
-    };
-  }, [obras, obrasTarefas]);
-
-  // Ranking by risk
-  const obrasRanked = useMemo(() => {
-    return obras
-      .map((o) => {
-        const m = calcObraMetrics(obrasTarefas[o.id]);
-        const diasRestantes = daysBetween(new Date(), o.prazoFinal);
-        const riskScore =
-          m.atrasadas * 10 +
-          (m.avancoFisico < 50 ? 20 : 0) +
-          (diasRestantes < 0 ? 30 : diasRestantes < 14 ? 15 : 0);
-        return { ...o, metrics: m, diasRestantes, riskScore };
-      })
-      .sort((a, b) => b.riskScore - a.riskScore);
-  }, [obras, obrasTarefas]);
-
-  // Most delayed tasks across all obras
-  const topGargalos = useMemo(() => {
-    return Object.entries(obrasTarefas)
-      .flatMap(([obraId, tasks]) =>
-        tasks.map((t) => ({
-          ...t,
-          obraId,
-          obraNome: obras.find((o) => o.id === obraId)?.nome,
-        }))
-      )
-      .filter((t) => t.status === 'atrasado')
-      .sort((a, b) => {
-        const aDelay = daysBetween(a.endDate, new Date());
-        const bDelay = daysBetween(b.endDate, new Date());
-        return bDelay - aDelay;
-      })
-      .slice(0, 5);
-  }, [obras, obrasTarefas]);
-
-  if (selectedObra) {
-    const obra = obras.find((o) => o.id === selectedObra);
-    return (
-      <div
-        style={{
-          minHeight: '100vh',
-          background: BRAND.offWhite,
-          fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
-        }}
-      >
-        <link
-          href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap"
-          rel="stylesheet"
-        />
-        {/* Top bar */}
-        <div
-          style={{
-            background: BRAND.cafeEscuro,
-            padding: '12px 24px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 12,
-            position: 'sticky',
-            top: 0,
-            zIndex: 100,
-          }}
-        >
-          <div
-            style={{
-              width: 32,
-              height: 32,
-              borderRadius: 8,
-              background: BRAND.douradoCafe,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              fontWeight: 800,
-              color: BRAND.cafeEscuro,
-              fontSize: 14,
-              fontFamily: "'DM Serif Display', serif",
-            }}
-          >
-            α
-          </div>
-          <span
-            style={{
-              color: '#fff',
-              fontWeight: 700,
-              fontSize: 15,
-              fontFamily: "'DM Serif Display', serif",
-            }}
-          >
-            Alpha Implantações
-          </span>
-          <span
-            style={{ color: BRAND.douradoCafe, fontSize: 12, marginLeft: 4 }}
-          >
-            / {obra?.nome}
-          </span>
-        </div>
-        <div
-          style={{
-            maxWidth: 1280,
-            margin: '0 auto',
-            padding: '20px 16px 40px',
-          }}
-        >
-          <ObraDetail
-            obra={obra}
-            tarefas={obrasTarefas[selectedObra]}
-            onBack={() => setSelectedObra(null)}
-            allObras={obras}
-            allTarefas={obrasTarefas}
-          />
-        </div>
-      </div>
-    );
-  }
+  const handleLogin = () => {
+    if (!email.trim() || !senha.trim()) { setErro("Preencha email e senha."); return; }
+    setLoading(true);
+    setErro("");
+    setTimeout(() => {
+      const found = userStore.find(email, senha);
+      if (found) {
+        onLogin(found);
+      } else {
+        setErro("Email ou senha incorretos. Verifique os dados e tente novamente.");
+        setLoading(false);
+      }
+    }, 600);
+  };
 
   return (
-    <div
-      style={{
-        minHeight: '100vh',
-        background: BRAND.offWhite,
-        fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
-      }}
-    >
-      <link
-        href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Serif+Display&display=swap"
-        rel="stylesheet"
-      />
+    <div style={{
+      minHeight: "100vh", background: "linear-gradient(145deg, #1a0e08 0%, #2c1810 40%, #3d2214 70%, #4a3020 100%)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: "24px", position: "relative", overflow: "hidden"
+    }}>
+      <div style={{ position: "absolute", top: -60, right: -60, width: 260, height: 260, borderRadius: "50%", border: "1px solid rgba(196,164,120,.06)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", bottom: -80, left: -80, width: 340, height: 340, borderRadius: "50%", border: "1px solid rgba(196,164,120,.05)", pointerEvents: "none" }} />
 
-      {/* Top bar */}
-      <div
-        style={{
-          background: BRAND.cafeEscuro,
-          padding: '12px 24px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 12,
-          position: 'sticky',
-          top: 0,
-          zIndex: 100,
-          boxShadow: '0 2px 12px #0003',
-        }}
-      >
-        <div
-          style={{
-            width: 36,
-            height: 36,
-            borderRadius: 10,
-            background: BRAND.douradoCafe,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontWeight: 800,
-            color: BRAND.cafeEscuro,
-            fontSize: 16,
-            fontFamily: "'DM Serif Display', serif",
-          }}
-        >
-          α
-        </div>
-        <div>
-          <div
-            style={{
-              color: '#fff',
-              fontWeight: 700,
-              fontSize: 16,
-              fontFamily: "'DM Serif Display', serif",
-              lineHeight: 1.2,
-            }}
-          >
+      <div style={{ width: "100%", maxWidth: 400, zIndex: 1 }}>
+        {/* Header */}
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{
+            width: 52, height: 52, borderRadius: 14, margin: "0 auto 14px",
+            background: "rgba(196,164,120,.12)", border: "1px solid rgba(196,164,120,.25)",
+            display: "flex", alignItems: "center", justifyContent: "center"
+          }}>
+            <svg width="24" height="24" viewBox="0 0 36 36" fill="none">
+              <rect x="4" y="14" width="28" height="3" rx="1.5" fill="#c4a478" opacity="0.9"/>
+              <rect x="4" y="20" width="20" height="3" rx="1.5" fill="#c4a478" opacity="0.6"/>
+              <circle cx="27" cy="10" r="5" stroke="#c4a478" strokeWidth="2" fill="none" opacity="0.8"/>
+            </svg>
+          </div>
+          <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 22, color: "#f5ebe0", margin: "0 0 5px" }}>
+            Bem-vindo
+          </h2>
+          <p style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.4)", margin: 0 }}>
             Alpha Implantações
-          </div>
-          <div style={{ color: BRAND.douradoCafe, fontSize: 11 }}>
-            Gestão de Obras — Ponto Alpha Café
-          </div>
-        </div>
-        <button
-          onClick={() => setShowNewModal(true)}
-          style={{
-            marginLeft: 'auto',
-            background: `linear-gradient(135deg, ${BRAND.douradoCafe}, ${BRAND.caramelo})`,
-            border: 'none',
-            borderRadius: 10,
-            padding: '8px 18px',
-            color: '#fff',
-            fontSize: 13,
-            fontWeight: 700,
-            cursor: 'pointer',
-            display: 'flex',
-            alignItems: 'center',
-            gap: 6,
-            boxShadow: `0 2px 10px ${BRAND.douradoCafe}66`,
-          }}
-        >
-          <Icon name="plus" size={16} color="#fff" /> Nova Implantação
-        </button>
-      </div>
-
-      <div
-        style={{ maxWidth: 1280, margin: '0 auto', padding: '24px 16px 40px' }}
-      >
-        {/* Hero Section */}
-        <div
-          style={{
-            background: `linear-gradient(135deg, ${BRAND.cafeEscuro}, ${BRAND.marromQuente})`,
-            borderRadius: 24,
-            padding: '32px 28px',
-            color: '#fff',
-            marginBottom: 24,
-            position: 'relative',
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            style={{
-              position: 'absolute',
-              top: -40,
-              right: -40,
-              width: 200,
-              height: 200,
-              borderRadius: '50%',
-              background: `${BRAND.douradoCafe}10`,
-            }}
-          />
-          <div
-            style={{
-              position: 'absolute',
-              bottom: -50,
-              right: 80,
-              width: 140,
-              height: 140,
-              borderRadius: '50%',
-              background: `${BRAND.douradoCafe}08`,
-            }}
-          />
-          <div
-            style={{
-              position: 'absolute',
-              top: 20,
-              right: 30,
-              width: 60,
-              height: 60,
-              borderRadius: '50%',
-              background: `${BRAND.douradoCafe}12`,
-            }}
-          />
-          <h1
-            style={{
-              margin: 0,
-              fontSize: 28,
-              fontWeight: 700,
-              fontFamily: "'DM Serif Display', serif",
-              lineHeight: 1.2,
-            }}
-          >
-            Painel de Gestão
-          </h1>
-          <p
-            style={{
-              margin: '8px 0 0',
-              fontSize: 14,
-              opacity: 0.75,
-              maxWidth: 600,
-              lineHeight: 1.5,
-            }}
-          >
-            Acompanhe todas as implantações das unidades Ponto Alpha Café em
-            tempo real. Dashboard executivo com IA integrada.
           </p>
         </div>
 
-        {/* KPIs */}
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-            gap: 14,
-            marginBottom: 24,
-          }}
-        >
-          <KPICard
-            label="Obras Ativas"
-            value={globalMetrics.obrasTotal}
-            icon="building"
-            color={BRAND.cafeEscuro}
-          />
-          <KPICard
-            label="Tarefas Totais"
-            value={globalMetrics.total}
-            icon="file"
-            color={BRAND.douradoCafe}
-          />
-          <KPICard
-            label="Concluídas"
-            value={globalMetrics.concluidas}
-            subtitle={`${(
-              (globalMetrics.concluidas / globalMetrics.total) *
-              100
-            ).toFixed(0)}% do total`}
-            icon="check"
-            color={BRAND.verdeFolha}
-          />
-          <KPICard
-            label="Atrasadas"
-            value={globalMetrics.atrasadas}
-            subtitle="Requer atenção"
-            icon="alert"
-            color={BRAND.vermelho}
-          />
-          <KPICard
-            label="Avanço Médio"
-            value={`${globalMetrics.avgProgress.toFixed(0)}%`}
-            icon="chart"
-            color={BRAND.caramelo}
-          />
-        </div>
-
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: '1fr 1fr',
-            gap: 20,
-            marginBottom: 24,
-          }}
-        >
-          {/* Obras Ranking */}
-          <div
-            style={{
-              background: '#fff',
-              borderRadius: 16,
-              padding: 24,
-              border: `1px solid ${BRAND.creme}`,
-              gridColumn: 'span 1',
-            }}
-          >
-            <h3
-              style={{
-                margin: '0 0 16px',
-                fontSize: 17,
-                fontWeight: 700,
-                color: BRAND.cafeEscuro,
-                fontFamily: "'DM Serif Display', serif",
-              }}
-            >
-              Ranking de Risco
-            </h3>
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-              {obrasRanked.map((o, i) => (
-                <button
-                  key={o.id}
-                  onClick={() => setSelectedObra(o.id)}
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 14,
-                    padding: '14px 16px',
-                    borderRadius: 14,
-                    border: `1px solid ${BRAND.creme}`,
-                    background:
-                      i === 0 ? `${BRAND.vermelho}08` : BRAND.offWhite,
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'all 0.2s',
-                    width: '100%',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.transform = 'translateY(-1px)';
-                    e.currentTarget.style.boxShadow = '0 4px 12px #0001';
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = '';
-                    e.currentTarget.style.boxShadow = '';
-                  }}
-                >
-                  <div
-                    style={{
-                      width: 36,
-                      height: 36,
-                      borderRadius: 10,
-                      background:
-                        i === 0
-                          ? `${BRAND.vermelho}20`
-                          : `${BRAND.douradoCafe}20`,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      fontWeight: 800,
-                      fontSize: 16,
-                      color: i === 0 ? BRAND.vermelho : BRAND.douradoCafe,
-                      fontFamily: "'DM Serif Display', serif",
-                      flexShrink: 0,
-                    }}
-                  >
-                    {i + 1}
-                  </div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 600,
-                        color: BRAND.cafeEscuro,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {o.nome}
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 12,
-                        color: BRAND.caramelo,
-                        marginTop: 2,
-                      }}
-                    >
-                      📍 {o.cidade} • 👤 {o.responsavel}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                    <div
-                      style={{
-                        fontSize: 16,
-                        fontWeight: 800,
-                        color:
-                          o.metrics.avancoFisico >= 80
-                            ? BRAND.verdeFolha
-                            : o.metrics.avancoFisico >= 40
-                            ? BRAND.douradoCafe
-                            : BRAND.vermelho,
-                      }}
-                    >
-                      {o.metrics.avancoFisico.toFixed(0)}%
-                    </div>
-                    <div
-                      style={{
-                        fontSize: 11,
-                        color:
-                          o.diasRestantes < 0 ? BRAND.vermelho : BRAND.caramelo,
-                      }}
-                    >
-                      {o.diasRestantes < 0
-                        ? `${Math.abs(o.diasRestantes)}d atrasada`
-                        : `${o.diasRestantes}d restantes`}
-                    </div>
-                  </div>
-                </button>
-              ))}
-            </div>
+        {/* Card */}
+        <div style={{ background: "rgba(250,246,241,.05)", border: "1px solid rgba(196,164,120,.18)", borderRadius: 18, padding: isMobile ? "24px 20px" : "32px 28px", backdropFilter: "blur(8px)" }}>
+          {/* Email */}
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Email</label>
+            <input
+              type="email" value={email} onChange={e => { setEmail(e.target.value); setErro(""); }}
+              onKeyDown={e => e.key === "Enter" && handleLogin()}
+              placeholder="admin@pontoacafe.com"
+              style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(196,164,120,.22)", background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none", transition: "border .2s" }}
+            />
           </div>
 
-          {/* Gargalos */}
-          <div
+          {/* Senha */}
+          <div style={{ marginBottom: 8 }}>
+            <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Senha</label>
+            <input
+              type="password" value={senha} onChange={e => { setSenha(e.target.value); setErro(""); }}
+              onKeyDown={e => e.key === "Enter" && handleLogin()}
+              placeholder="••••••••"
+              style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(196,164,120,.22)", background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
+            />
+          </div>
+
+          {/* Erro */}
+          {erro && (
+            <div style={{ background: "rgba(176,48,32,.2)", border: "1px solid rgba(176,48,32,.4)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12, color: "#ff9a8a", fontFamily: "'Montserrat',sans-serif", fontWeight: 600 }}>
+              ⚠ {erro}
+            </div>
+          )}
+
+          {/* Botão */}
+          <button
+            onClick={handleLogin}
+            disabled={loading}
             style={{
-              background: '#fff',
-              borderRadius: 16,
-              padding: 24,
-              border: `1px solid ${BRAND.creme}`,
+              width: "100%", padding: "14px", marginTop: 16,
+              background: loading ? "rgba(196,164,120,.5)" : "linear-gradient(135deg, #c4a478 0%, #b8935e 100%)",
+              border: "none", borderRadius: 10, cursor: loading ? "not-allowed" : "pointer",
+              fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14,
+              color: "#2c1810", letterSpacing: "0.3px", transition: "opacity .2s"
             }}
           >
-            <h3
-              style={{
-                margin: '0 0 16px',
-                fontSize: 17,
-                fontWeight: 700,
-                color: BRAND.cafeEscuro,
-                fontFamily: "'DM Serif Display', serif",
-                display: 'flex',
-                alignItems: 'center',
-                gap: 8,
-              }}
+            {loading ? "Entrando..." : "Entrar"}
+          </button>
+
+          {/* Esqueci minha senha */}
+          <div style={{ textAlign: "right", marginTop: 8 }}>
+            <button
+              onClick={onForgot}
+              style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "'Montserrat',sans-serif", fontSize: 11, fontWeight: 600, color: "rgba(196,164,120,.6)", padding: 0 }}
             >
-              <Icon name="alert" size={20} color={BRAND.vermelho} /> Gargalos
-              Principais
-            </h3>
-            {topGargalos.length === 0 ? (
-              <p
+              Esqueci minha senha
+            </button>
+          </div>
+
+          {/* Criar conta */}
+          <div style={{ textAlign: "center", marginTop: 20 }}>
+            <span style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12, color: "rgba(245,235,224,.4)" }}>Não tem conta?{" "}</span>
+            <button
+              onClick={onSignup}
+              style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "'Montserrat',sans-serif", fontSize: 12, fontWeight: 700, color: "#c4a478", padding: 0 }}
+            >
+              Criar conta
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SIGNUP SCREEN ────────────────────────────────────────────────────────────
+function SignupScreen({ onBack, onCadastrar }) {
+  const [nome, setNome] = useState("");
+  const [email, setEmail] = useState("");
+  const [senha, setSenha] = useState("");
+  const [confirma, setConfirma] = useState("");
+  const [erro, setErro] = useState("");
+  const [success, setSuccess] = useState(false);
+  const isMobile = useIsMobile();
+
+  const handleCadastro = () => {
+    setErro("");
+    if (!nome.trim() || !email.trim() || !senha.trim() || !confirma.trim()) {
+      setErro("Preencha todos os campos."); return;
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setErro("Digite um email válido."); return;
+    }
+    if (senha.trim().length < 6) {
+      setErro("A senha deve ter pelo menos 6 caracteres."); return;
+    }
+    if (senha.trim() !== confirma.trim()) {
+      setErro("As senhas não coincidem."); return;
+    }
+    const result = userStore.add(nome, email, senha);
+    if (!result.ok) { setErro(result.erro); return; }
+    setSuccess(true);
+    setTimeout(() => { onCadastrar && onCadastrar(); onBack(); }, 2000);
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: "linear-gradient(145deg, #1a0e08 0%, #2c1810 40%, #3d2214 70%, #4a3020 100%)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: "24px", position: "relative", overflow: "hidden"
+    }}>
+      <div style={{ position: "absolute", top: -60, left: -60, width: 260, height: 260, borderRadius: "50%", border: "1px solid rgba(196,164,120,.06)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", bottom: -80, right: -80, width: 340, height: 340, borderRadius: "50%", border: "1px solid rgba(196,164,120,.05)", pointerEvents: "none" }} />
+
+      <div style={{ width: "100%", maxWidth: 400, zIndex: 1 }}>
+        {/* Header */}
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{
+            width: 52, height: 52, borderRadius: 14, margin: "0 auto 14px",
+            background: "rgba(196,164,120,.12)", border: "1px solid rgba(196,164,120,.25)",
+            display: "flex", alignItems: "center", justifyContent: "center"
+          }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <circle cx="12" cy="8" r="4" stroke="#c4a478" strokeWidth="2"/>
+              <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" stroke="#c4a478" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+          </div>
+          <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 22, color: "#f5ebe0", margin: "0 0 5px" }}>
+            Criar conta
+          </h2>
+          <p style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.4)", margin: 0 }}>
+            Alpha Implantações
+          </p>
+        </div>
+
+        {/* Card */}
+        <div style={{ background: "rgba(250,246,241,.05)", border: "1px solid rgba(196,164,120,.18)", borderRadius: 18, padding: isMobile ? "24px 20px" : "32px 28px" }}>
+          {success ? (
+            <div style={{ textAlign: "center", padding: "16px 0" }}>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: "#f5ebe0", marginBottom: 6 }}>Cadastro realizado!</div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12, color: "rgba(245,235,224,.4)" }}>Redirecionando para o login...</div>
+            </div>
+          ) : (
+            <>
+              {/* Nome */}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Nome Completo</label>
+                <input
+                  type="text" value={nome} onChange={e => { setNome(e.target.value); setErro(""); }}
+                  placeholder="Seu nome completo"
+                  style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(196,164,120,.22)", background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
+                />
+              </div>
+
+              {/* Email */}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Email</label>
+                <input
+                  type="email" value={email} onChange={e => { setEmail(e.target.value); setErro(""); }}
+                  placeholder="seu@email.com"
+                  style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(196,164,120,.22)", background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
+                />
+              </div>
+
+              {/* Senha */}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Senha <span style={{ fontWeight: 400, opacity: .6 }}>(mín. 6 caracteres)</span></label>
+                <input
+                  type="password" value={senha} onChange={e => { setSenha(e.target.value); setErro(""); }}
+                  placeholder="••••••••"
+                  style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(196,164,120,.22)", background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
+                />
+              </div>
+
+              {/* Confirmar Senha */}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Confirmar Senha</label>
+                <input
+                  type="password" value={confirma} onChange={e => { setConfirma(e.target.value); setErro(""); }}
+                  onKeyDown={e => e.key === "Enter" && handleCadastro()}
+                  placeholder="Repita a senha"
+                  style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (confirma && senha && confirma !== senha ? "rgba(176,48,32,.5)" : "rgba(196,164,120,.22)"), background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
+                />
+              </div>
+
+              {/* Erro */}
+              {erro && (
+                <div style={{ background: "rgba(176,48,32,.2)", border: "1px solid rgba(176,48,32,.4)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12, color: "#ff9a8a", fontFamily: "'Montserrat',sans-serif", fontWeight: 600 }}>
+                  ⚠ {erro}
+                </div>
+              )}
+
+              <button
+                onClick={handleCadastro}
                 style={{
-                  color: BRAND.caramelo,
-                  fontSize: 14,
-                  textAlign: 'center',
-                  padding: 20,
+                  width: "100%", padding: "14px",
+                  background: "linear-gradient(135deg, #c4a478 0%, #b8935e 100%)",
+                  border: "none", borderRadius: 10, cursor: "pointer",
+                  fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14,
+                  color: "#2c1810", letterSpacing: "0.3px"
                 }}
               >
-                Nenhum gargalo identificado
-              </p>
-            ) : (
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                {topGargalos.map((t, i) => {
-                  const delay = daysBetween(t.endDate, new Date());
-                  return (
-                    <div
-                      key={i}
-                      style={{
-                        padding: '12px 14px',
-                        borderRadius: 10,
-                        background: `${BRAND.vermelho}06`,
-                        border: `1px solid ${BRAND.vermelho}15`,
-                      }}
-                    >
-                      <div
-                        style={{
-                          display: 'flex',
-                          justifyContent: 'space-between',
-                          alignItems: 'flex-start',
-                          gap: 8,
-                        }}
-                      >
-                        <div>
-                          <div
-                            style={{
-                              fontSize: 13,
-                              fontWeight: 600,
-                              color: BRAND.cafeEscuro,
-                            }}
-                          >
-                            {t.task}
-                          </div>
-                          <div
-                            style={{
-                              fontSize: 11,
-                              color: BRAND.caramelo,
-                              marginTop: 2,
-                            }}
-                          >
-                            {t.obraNome}
-                          </div>
-                        </div>
-                        <span
-                          style={{
-                            fontSize: 12,
-                            fontWeight: 700,
-                            color: BRAND.vermelho,
-                            whiteSpace: 'nowrap',
-                            background: `${BRAND.vermelho}12`,
-                            padding: '2px 8px',
-                            borderRadius: 6,
-                          }}
-                        >
-                          -{delay}d
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })}
+                Criar Conta
+              </button>
+
+              <div style={{ textAlign: "center", marginTop: 20 }}>
+                <button
+                  onClick={onBack}
+                  style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "'Montserrat',sans-serif", fontSize: 12, fontWeight: 700, color: "rgba(196,164,120,.7)", padding: 0 }}
+                >
+                  ← Voltar ao login
+                </button>
               </div>
-            )}
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── FORGOT PASSWORD SCREEN ───────────────────────────────────────────────────
+function ForgotPasswordScreen({ onBack }) {
+  const [email, setEmail] = useState("");
+  const [step, setStep] = useState("form"); // form | sent
+  const [erro, setErro] = useState("");
+  const isMobile = useIsMobile();
+
+  const handleEnviar = () => {
+    const emailNorm = email.trim().toLowerCase();
+    if (!emailNorm) { setErro("Digite seu email para continuar."); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) { setErro("Email inválido."); return; }
+    setErro("");
+    setStep("sent");
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: "linear-gradient(145deg, #1a0e08 0%, #2c1810 40%, #3d2214 70%, #4a3020 100%)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: "24px", position: "relative", overflow: "hidden"
+    }}>
+      <div style={{ position: "absolute", top: -60, right: -60, width: 260, height: 260, borderRadius: "50%", border: "1px solid rgba(196,164,120,.06)", pointerEvents: "none" }} />
+      <div style={{ position: "absolute", bottom: -80, left: -80, width: 340, height: 340, borderRadius: "50%", border: "1px solid rgba(196,164,120,.05)", pointerEvents: "none" }} />
+
+      <div style={{ width: "100%", maxWidth: 400, zIndex: 1 }}>
+        {/* Header */}
+        <div style={{ textAlign: "center", marginBottom: 32 }}>
+          <div style={{
+            width: 52, height: 52, borderRadius: 14, margin: "0 auto 14px",
+            background: "rgba(196,164,120,.12)", border: "1px solid rgba(196,164,120,.25)",
+            display: "flex", alignItems: "center", justifyContent: "center"
+          }}>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+              <rect x="3" y="11" width="18" height="11" rx="2" stroke="#c4a478" strokeWidth="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke="#c4a478" strokeWidth="2" strokeLinecap="round"/>
+              <circle cx="12" cy="16" r="1.5" fill="#c4a478"/>
+            </svg>
           </div>
+          <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 22, color: "#f5ebe0", margin: "0 0 5px" }}>
+            Recuperar Senha
+          </h2>
+          <p style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.4)", margin: 0 }}>
+            Alpha Implantações
+          </p>
         </div>
 
-        {/* All Obras List */}
-        <div
+        {/* Card */}
+        <div style={{ background: "rgba(250,246,241,.05)", border: "1px solid rgba(196,164,120,.18)", borderRadius: 18, padding: isMobile ? "24px 20px" : "32px 28px" }}>
+          {step === "form" ? (
+            <>
+              <div style={{ fontSize: 13, color: "rgba(245,235,224,.55)", fontFamily: "'Montserrat',sans-serif", lineHeight: 1.65, marginBottom: 22 }}>
+                Digite o email cadastrado na sua conta. Se ele existir em nosso sistema, você receberá um link de recuperação em instantes.
+              </div>
+
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Email cadastrado</label>
+                <input
+                  type="email" value={email}
+                  onChange={e => { setEmail(e.target.value); setErro(""); }}
+                  onKeyDown={e => e.key === "Enter" && handleEnviar()}
+                  placeholder="seu@email.com"
+                  style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (erro ? "rgba(176,48,32,.5)" : "rgba(196,164,120,.22)"), background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
+                />
+              </div>
+
+              {erro && (
+                <div style={{ background: "rgba(176,48,32,.2)", border: "1px solid rgba(176,48,32,.4)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12, color: "#ff9a8a", fontFamily: "'Montserrat',sans-serif", fontWeight: 600 }}>
+                  ⚠ {erro}
+                </div>
+              )}
+
+              <button
+                onClick={handleEnviar}
+                style={{
+                  width: "100%", padding: "14px", marginTop: 8,
+                  background: "linear-gradient(135deg, #c4a478 0%, #b8935e 100%)",
+                  border: "none", borderRadius: 10, cursor: "pointer",
+                  fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14,
+                  color: "#2c1810", letterSpacing: "0.3px"
+                }}
+              >
+                Enviar link de recuperação
+              </button>
+
+              <div style={{ textAlign: "center", marginTop: 20 }}>
+                <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "'Montserrat',sans-serif", fontSize: 12, fontWeight: 700, color: "rgba(196,164,120,.7)", padding: 0 }}>
+                  ← Voltar ao login
+                </button>
+              </div>
+            </>
+          ) : (
+            /* ── Sent state ── */
+            <div style={{ textAlign: "center", padding: "8px 0 4px" }}>
+              <div style={{
+                width: 64, height: 64, borderRadius: "50%", margin: "0 auto 18px",
+                background: "rgba(107,142,90,.15)", border: "1px solid rgba(107,142,90,.3)",
+                display: "flex", alignItems: "center", justifyContent: "center"
+              }}>
+                <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                  <path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2z" stroke="#6b8e5a" strokeWidth="1.8"/>
+                  <path d="M22 6l-10 7L2 6" stroke="#6b8e5a" strokeWidth="1.8" strokeLinecap="round"/>
+                </svg>
+              </div>
+
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 17, color: "#f5ebe0", marginBottom: 10 }}>
+                Email enviado!
+              </div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.5)", lineHeight: 1.7, marginBottom: 6 }}>
+                Se o endereço
+              </div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, fontWeight: 700, color: "#c4a478", marginBottom: 10, wordBreak: "break-all" }}>
+                {email.trim().toLowerCase()}
+              </div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.5)", lineHeight: 1.7, marginBottom: 24 }}>
+                estiver cadastrado em nosso sistema, você receberá um email com as instruções para redefinir sua senha. Verifique também a caixa de spam.
+              </div>
+
+              <div style={{ background: "rgba(196,164,120,.08)", border: "1px solid rgba(196,164,120,.15)", borderRadius: 10, padding: "12px 14px", marginBottom: 22, fontSize: 11, color: "rgba(196,164,120,.7)", fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6, textAlign: "left" }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>ℹ️ Não recebeu o email?</div>
+                Aguarde até 5 minutos e confira a pasta de spam. Se o problema persistir, entre em contato com o administrador do sistema.
+              </div>
+
+              <button
+                onClick={onBack}
+                style={{
+                  width: "100%", padding: "13px",
+                  background: "linear-gradient(135deg, #c4a478 0%, #b8935e 100%)",
+                  border: "none", borderRadius: 10, cursor: "pointer",
+                  fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14,
+                  color: "#2c1810"
+                }}
+              >
+                Voltar ao login
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── SIDEBAR ─────────────────────────────────────────────────────────────────
+function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onLogout }) {
+  const NAV = [
+    { id: "home", l: "Dashboard", i: "🏠" },
+    { id: "nova", l: "Nova Obra", i: "➕" },
+    { id: "equipe", l: "Equipe", i: "👥" },
+    { id: "relatorios", l: "Relatórios", i: "📄" },
+    { id: "whatsapp", l: "WhatsApp", i: "💬" },
+    { id: "config", l: "Configurações", i: "⚙️" }
+  ];
+  const go = (id) => { setView(id); if (isMobile) onClose(); };
+
+  const inner = (
+    <div style={{ width: 220, height: "100%", background: B.cafe, display: "flex", flexDirection: "column" }}>
+      {isMobile && (
+        <div style={{ padding: "14px 16px 0", display: "flex", justifyContent: "flex-end" }}>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", color: B.dourado, fontSize: 24, lineHeight: 1, padding: 4 }}>✕</button>
+        </div>
+      )}
+      <div style={{ padding: isMobile ? "10px 20px 20px" : "22px 20px", borderBottom: "1px solid rgba(196,164,120,.2)" }}>
+        <div style={{ fontSize: 8, color: B.dourado, letterSpacing: "2px", textTransform: "uppercase", marginBottom: 3, fontFamily: "'Montserrat',sans-serif" }}>Grupo Alpha</div>
+        <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 15, color: B.creme, fontWeight: 800, lineHeight: 1.3 }}>Alpha<br />Implantações</div>
+        <div style={{ fontSize: 8, color: B.dourado + "77", marginTop: 2, fontFamily: "'Montserrat',sans-serif" }}>v2.3</div>
+      </div>
+      <nav style={{ padding: "10px 8px", flex: 1, overflowY: "auto" }}>
+        {NAV.map(item => (
+          <button key={item.id} onClick={() => go(item.id)} style={{
+            width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderRadius: 8, border: "none",
+            background: view === item.id ? "rgba(196,164,120,.2)" : "transparent",
+            color: view === item.id ? B.dourado : "rgba(245,235,224,.65)",
+            cursor: "pointer", fontSize: 13, fontWeight: view === item.id ? 700 : 400,
+            fontFamily: "'Montserrat',sans-serif",
+            borderLeft: view === item.id ? "3px solid " + B.dourado : "3px solid transparent",
+            marginBottom: 3, minHeight: 46, textAlign: "left"
+          }}>
+            <span style={{ fontSize: 16 }}>{item.i}</span>
+            {item.l}
+            {item.id === "home" && alertCount > 0 && (
+              <span style={{ marginLeft: "auto", background: B.vermelho, color: "white", borderRadius: 10, padding: "2px 7px", fontSize: 10, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>{alertCount}</span>
+            )}
+          </button>
+        ))}
+      </nav>
+
+      {/* User info + Logout */}
+      <div style={{ padding: "12px 14px", borderTop: "1px solid rgba(196,164,120,.2)" }}>
+        {user && (
+          <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, background: "rgba(196,164,120,.1)" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: B.dourado, fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              👤 {user.nome}
+            </div>
+            <div style={{ fontSize: 9, color: "rgba(245,235,224,.35)", fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}>
+              {user.email}
+            </div>
+          </div>
+        )}
+        <button
+          onClick={onLogout}
           style={{
-            background: '#fff',
-            borderRadius: 16,
-            padding: 24,
-            border: `1px solid ${BRAND.creme}`,
+            width: "100%", padding: "9px 12px", borderRadius: 8, border: "1px solid rgba(176,48,32,.35)",
+            background: "rgba(176,48,32,.1)", color: "rgba(255,150,130,.8)", cursor: "pointer",
+            fontSize: 12, fontWeight: 700, fontFamily: "'Montserrat',sans-serif",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 6
           }}
         >
-          <h3
-            style={{
-              margin: '0 0 16px',
-              fontSize: 17,
-              fontWeight: 700,
-              color: BRAND.cafeEscuro,
-              fontFamily: "'DM Serif Display', serif",
-            }}
-          >
-            Todas as Implantações
-          </h3>
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
-              gap: 14,
-            }}
-          >
-            {obrasRanked.map((o) => {
-              const statusColor =
-                o.diasRestantes < 0
-                  ? BRAND.vermelho
-                  : o.diasRestantes < 14
-                  ? BRAND.amarelo
-                  : BRAND.verdeFolha;
-              const statusLabel =
-                o.diasRestantes < 0
-                  ? 'Atrasada'
-                  : o.diasRestantes < 14
-                  ? 'Em Risco'
-                  : 'No Prazo';
+          <span>⎋</span> Sair
+        </button>
+        <div style={{ fontSize: 9, color: "rgba(245,235,224,.15)", textTransform: "uppercase", letterSpacing: "1px", textAlign: "center", marginTop: 10, fontFamily: "'Montserrat',sans-serif" }}>Ponto Alpha Café</div>
+      </div>
+    </div>
+  );
+
+  if (isMobile) {
+    return (
+      <>
+        {open && <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.55)", zIndex: 200 }} />}
+        <div style={{ position: "fixed", top: 0, left: open ? 0 : -240, bottom: 0, width: 220, zIndex: 201, transition: "left .28s cubic-bezier(.4,0,.2,1)", boxShadow: open ? "4px 0 24px rgba(0,0,0,.3)" : "none" }}>
+          {inner}
+        </div>
+      </>
+    );
+  }
+  return <div style={{ width: 220, minHeight: "100vh", flexShrink: 0 }}>{inner}</div>;
+}
+
+// ─── TOP BAR ─────────────────────────────────────────────────────────────────
+function TopBar({ isMobile, onMenu, alertCount, view, selObra, user, onLogout }) {
+  const titles = { home: "Dashboard", nova: "Nova Obra", equipe: "Equipe", relatorios: "Relatórios", whatsapp: "WhatsApp", config: "Configurações", "obra-detail": selObra ? selObra.nome.split("—")[1]?.trim() || selObra.nome : "Implantação" };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, padding: isMobile ? "13px 16px 11px" : "0 0 18px", borderBottom: isMobile ? "1px solid " + B.creme : "none", marginBottom: isMobile ? 16 : 0, background: isMobile ? B.branco : "transparent", position: isMobile ? "sticky" : "static", top: 0, zIndex: 10 }}>
+      {isMobile && (
+        <button onClick={onMenu} style={{ background: "none", border: "1px solid " + B.creme, borderRadius: 8, width: 40, height: 40, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 19, flexShrink: 0 }}>☰</button>
+      )}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {isMobile
+          ? <div style={{ fontWeight: 700, fontSize: 15, color: B.cafe, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'Montserrat',sans-serif" }}>{titles[view] || ""}</div>
+          : <div style={{ fontSize: 10, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>{new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+        }
+      </div>
+      {alertCount > 0 && <div style={{ background: "#fdecea", border: "1px solid " + B.vermelho + "33", borderRadius: 8, padding: "5px 10px", fontSize: 11, color: B.vermelho, fontWeight: 700, whiteSpace: "nowrap", fontFamily: "'Montserrat',sans-serif" }}>⚠️ {alertCount}</div>}
+      {!isMobile && (
+        <button
+          onClick={onLogout}
+          style={{ padding: "7px 14px", borderRadius: 8, border: "1px solid rgba(176,48,32,.3)", background: "rgba(176,48,32,.06)", color: B.vermelho, cursor: "pointer", fontSize: 12, fontWeight: 700, fontFamily: "'Montserrat',sans-serif", display: "flex", alignItems: "center", gap: 5 }}
+        >
+          ⎋ Sair
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─── HOME ─────────────────────────────────────────────────────────────────────
+function HomeView({ obras, onSelect, logs, isMobile }) {
+  const [tab, setTab] = useState("dash");
+  const tot = obras.length;
+  const atrs = obras.filter(o => o.obraStatus === "Atrasada").length;
+  const risco = obras.filter(o => o.obraStatus === "Em Risco").length;
+  const avg = Math.round(obras.reduce((a, o) => a + o.avanco, 0) / obras.length);
+  const allUrgent = obras.flatMap(o => o.tarefas.filter(t => t.status === "Atrasado" || (daysLeft(t, o.elap) <= 3 && t.status !== "Concluído")).map(t => ({ ...t, obraRef: o, obra: o.nome })));
+  const compData = obras.map(o => ({ name: o.nome.split("—")[0].trim().slice(0, 8), avanco: o.avanco }));
+  const TABS = [{ id: "dash", l: "📊 Dashboard" }, { id: "urgencias", l: "⚠️ Urgências (" + allUrgent.length + ")" }, { id: "comparativo", l: "📈 Comparativo" }, { id: "logs", l: "📋 Logs" }];
+
+  return (
+    <div>
+      <div style={{ background: "linear-gradient(135deg," + B.cafe + "," + B.marrom + " 60%," + B.caramelo + ")", borderRadius: 14, padding: isMobile ? "18px" : "24px 26px", marginBottom: 16, color: B.creme, position: "relative", overflow: "hidden" }}>
+        <div style={{ position: "absolute", right: -20, top: -20, width: 140, height: 140, borderRadius: "50%", background: "rgba(196,164,120,.07)" }} />
+        <div style={{ fontSize: 8, color: B.dourado, letterSpacing: "2px", textTransform: "uppercase", marginBottom: 2, fontFamily: "'Montserrat',sans-serif" }}>Grupo Alpha · Alpha Implantações</div>
+        <h1 style={{ margin: "0 0 3px", fontSize: isMobile ? 18 : 22, fontFamily: "'Montserrat',sans-serif", fontWeight: 800 }}>Gestão de Implantações</h1>
+        <div style={{ fontSize: 10, color: B.creme + "77", fontFamily: "'Montserrat',sans-serif" }}>{new Date().toLocaleDateString("pt-BR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</div>
+        <div style={{ display: "flex", gap: isMobile ? 16 : 24, marginTop: 14, flexWrap: "wrap" }}>
+          {[[tot, "Obras"], [avg + "%", "Avanço Médio"], [atrs, "Atrasadas", atrs > 0 ? "#ff9a8a" : B.creme], [risco, "Em Risco", risco > 0 ? "#ffcc88" : B.creme]].map(([v, l, c]) => (
+            <div key={l}><div style={{ fontSize: isMobile ? 22 : 26, fontWeight: 800, fontFamily: "'Montserrat',sans-serif", color: c || B.creme }}>{v}</div><div style={{ fontSize: 9, color: B.dourado, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>{l}</div></div>
+          ))}
+        </div>
+      </div>
+      <Tabs tabs={TABS} active={tab} onChange={setTab} />
+      <div style={{ height: 14 }} />
+
+      {tab === "dash" && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3,1fr)", gap: 9, marginBottom: 16 }}>
+            <KpiCard label="Total Obras" value={tot} icon="🏗️" color={B.cafe} />
+            <KpiCard label="Em Risco" value={risco} icon="⚠️" color={B.laranja} />
+            <KpiCard label="Atrasadas" value={atrs} icon="🔴" color={B.vermelho} />
+            <KpiCard label="Urgências" value={allUrgent.length} icon="⏰" color={B.laranja} />
+            <KpiCard label="Avanço Médio" value={avg + "%"} icon="📈" color={B.caramelo} />
+            <KpiCard label="Logs" value={logs.length} icon="📋" color={B.cinza} />
+          </div>
+          <h3 style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 15, color: B.cafe, margin: "0 0 10px", fontWeight: 700 }}>Implantações Ativas</h3>
+          <div style={{ display: "flex", flexDirection: "column", gap: 9 }}>
+            {obras.map(o => (
+              <div key={o.id} onClick={() => onSelect(o)} style={{ background: B.branco, borderRadius: 12, padding: isMobile ? "14px" : "16px 18px", border: "1px solid " + B.creme, cursor: "pointer", borderLeft: "4px solid " + statusColor(o.obraStatus) }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8, gap: 8 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 14, color: B.cafe, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'Montserrat',sans-serif" }}>{o.nome}</div>
+                    <div style={{ fontSize: 11, color: B.cinza, marginTop: 1, fontFamily: "'Montserrat',sans-serif" }}>{o.resp}</div>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+                    <span style={{ fontSize: 20, fontWeight: 800, color: B.caramelo, fontFamily: "'Montserrat',sans-serif" }}>{o.avanco}%</span>
+                    <Badge s={o.obraStatus} />
+                  </div>
+                </div>
+                <Bar pct={o.avanco} color={statusColor(o.obraStatus)} h={5} />
+                <div style={{ display: "flex", gap: 10, marginTop: 7, flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 10, color: B.verde, fontFamily: "'Montserrat',sans-serif" }}>✅ {o.conc} conc.</span>
+                  {o.atras > 0 && <span style={{ fontSize: 10, color: B.vermelho, fontFamily: "'Montserrat',sans-serif" }}>⚠️ {o.atras} atras.</span>}
+                  <span style={{ fontSize: 10, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>IDP: {o.idp}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {tab === "urgencias" && (
+        <div>
+          {allUrgent.length === 0
+            ? <div style={{ textAlign: "center", padding: 32, color: B.cinza }}><div style={{ fontSize: 28 }}>✅</div><div style={{ fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>Nenhuma urgência!</div></div>
+            : allUrgent.map((u, i) => (
+              <div key={i} onClick={() => onSelect(u.obraRef)} style={{ background: B.branco, borderRadius: 8, padding: "11px 13px", border: "1px solid " + B.vermelho + "33", marginBottom: 7, cursor: "pointer", borderLeft: "3px solid " + B.vermelho }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>{u.t}</div>
+                <div style={{ fontSize: 11, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>{u.obra} · P{u.p} · {u.progresso}%</div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+
+      {tab === "comparativo" && (
+        <>
+          <div style={{ background: B.branco, borderRadius: 12, padding: 16, border: "1px solid " + B.creme, marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: B.cafe, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12, fontFamily: "'Montserrat',sans-serif" }}>Avanço por Obra (%)</div>
+            <BarChartSVG data={compData} />
+          </div>
+          {obras.map((o) => (
+            <div key={o.id} onClick={() => onSelect(o)} style={{ background: B.branco, borderRadius: 10, padding: "12px 14px", border: "1px solid " + B.creme, marginBottom: 7, cursor: "pointer", display: "flex", gap: 12, alignItems: "center" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: B.cafe, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'Montserrat',sans-serif" }}>{o.nome}</div>
+                <div style={{ fontSize: 10, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>{o.resp}</div>
+              </div>
+              <Badge s={o.obraStatus} />
+              <div style={{ textAlign: "right", flexShrink: 0 }}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: statusColor(o.obraStatus), fontFamily: "'Montserrat',sans-serif" }}>{o.avanco}%</div>
+                <div style={{ fontSize: 9, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>IDP: {o.idp}</div>
+              </div>
+            </div>
+          ))}
+        </>
+      )}
+
+      {tab === "logs" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+          {logs.length === 0
+            ? <div style={{ textAlign: "center", padding: 28, color: B.cinza, fontSize: 12, fontFamily: "'Montserrat',sans-serif" }}>Nenhuma ação registrada.</div>
+            : [...logs].reverse().slice(0, 30).map((l, i) => (
+              <div key={i} style={{ background: B.branco, borderRadius: 8, padding: "10px 13px", border: "1px solid " + B.creme }}>
+                <div style={{ fontSize: 11, color: B.cafe, fontWeight: 600, fontFamily: "'Montserrat',sans-serif" }}>{l.obra} · {l.tarefa}</div>
+                <div style={{ fontSize: 10, color: B.cinza, marginTop: 2, fontFamily: "'Montserrat',sans-serif" }}>{l.campo}: {String(l.de)} → <strong style={{ color: B.caramelo }}>{String(l.para)}</strong></div>
+                <div style={{ fontSize: 9, color: B.cinza, marginTop: 2, fontFamily: "'Montserrat',sans-serif" }}>{new Date(l.ts).toLocaleString("pt-BR").slice(0, 16)}</div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── OBRA DETAIL ─────────────────────────────────────────────────────────────
+function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile }) {
+  const [tab, setTab] = useState("overview");
+  const [aiOut, setAiOut] = useState({});
+  const [aiLoad, setAiLoad] = useState({});
+  const [editId, setEditId] = useState(null);
+  const [editData, setEditData] = useState({});
+  const [filterP, setFilterP] = useState("Todos");
+  const [filterS, setFilterS] = useState("Todos");
+  const [baseline, setBaseline] = useState(false);
+  const svgRef = useRef(null);
+
+  const TABS = [{ id: "overview", l: "📊 Dashboard" }, { id: "tarefas", l: "☑️ Tarefas" }, { id: "gantt", l: "📅 Gantt" }, { id: "inaug", l: "🎯 Inauguração" }, { id: "franqueado", l: "👤 Contatos" }, { id: "custos", l: "💰 Custos" }, { id: "ai", l: "🧠 IA" }];
+
+  const runAI = async (k, prompt) => {
+    setAiLoad(p => ({ ...p, [k]: true }));
+    try { const r = await callAI(prompt); setAiOut(p => ({ ...p, [k]: r })); }
+    catch { setAiOut(p => ({ ...p, [k]: "Erro ao conectar." })); }
+    setAiLoad(p => ({ ...p, [k]: false }));
+  };
+
+  const saveTask = (tid, changes) => {
+    const tk = obra.tarefas.find(t => t.id === tid);
+    if (tk) Object.entries(changes).forEach(([k, v]) => addLog(obra.nome, tk.t, k, String(tk[k]), String(v)));
+    onUpdate({ ...obra, tarefas: obra.tarefas.map(t => t.id === tid ? { ...t, ...changes } : t) });
+  };
+
+  const dlSVG = () => {
+    if (!svgRef.current) return;
+    const d = new XMLSerializer().serializeToString(svgRef.current);
+    const a = document.createElement("a");
+    a.href = "data:image/svg+xml," + encodeURIComponent(d);
+    a.download = "gantt.svg";
+    a.click();
+  };
+
+  const atrs = obra.tarefas.filter(t => t.status === "Atrasado").map(t => t.t).join(", ");
+  const ea = obra.tarefas.filter(t => t.status === "Em Andamento").map(t => t.t).slice(0, 3).join(", ");
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 8 }}>
+        <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", color: B.caramelo, fontSize: 13, fontWeight: 700, padding: "4px 0", display: "flex", alignItems: "center", gap: 4, fontFamily: "'Montserrat',sans-serif" }}>← Voltar</button>
+        <Btn small outline color={B.caramelo} onClick={() => printPDF(obra, aiOut.analysis || "")}>📄 PDF</Btn>
+      </div>
+      <div style={{ background: "linear-gradient(135deg," + B.cafe + "," + B.marrom + ")", borderRadius: 12, padding: isMobile ? "16px" : "18px 22px", color: B.creme, marginBottom: 14 }}>
+        <h2 style={{ margin: "0 0 2px", fontFamily: "'Montserrat',sans-serif", fontSize: isMobile ? 16 : 18, fontWeight: 800 }}>{obra.nome}</h2>
+        <div style={{ fontSize: 10, color: B.creme + "77", fontFamily: "'Montserrat',sans-serif" }}>{obra.resp}</div>
+        <div style={{ display: "flex", gap: 10, marginTop: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <Badge s={obra.obraStatus} />
+          <span style={{ fontSize: 10, color: B.dourado, fontFamily: "'Montserrat',sans-serif" }}>Dia {obra.elap}/{obra.total}</span>
+          <span style={{ fontSize: 10, color: B.dourado, fontFamily: "'Montserrat',sans-serif" }}>Avanço: {obra.avanco}%</span>
+          <span style={{ fontSize: 10, color: B.dourado, fontFamily: "'Montserrat',sans-serif" }}>IDP: {obra.idp}</span>
+        </div>
+      </div>
+      <Tabs tabs={TABS} active={tab} onChange={setTab} />
+      <div style={{ height: 14 }} />
+
+      {tab === "overview" && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 9, marginBottom: 16 }}>
+            <KpiCard label="Avanço" value={obra.avanco + "%"} icon="📈" color={statusColor(obra.obraStatus)} />
+            <KpiCard label="PPC" value={obra.ppc + "%"} icon="✅" color={B.caramelo} />
+            <KpiCard label="IDP" value={obra.idp} icon="📊" color={obra.idp >= 1 ? B.verde : B.vermelho} />
+            <KpiCard label="Dias" value={obra.elap} icon="📅" color={B.cafe} sub={"de " + obra.total} />
+          </div>
+          {obra.historico && obra.historico.length > 1 && (
+            <div style={{ background: B.branco, borderRadius: 12, padding: 16, border: "1px solid " + B.creme, marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: B.cafe, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10, fontFamily: "'Montserrat',sans-serif" }}>Histórico Semanal</div>
+              <LineChartSVG data={obra.historico} dataKey="avanco" color={B.caramelo} />
+            </div>
+          )}
+          <div style={{ background: B.branco, borderRadius: 12, padding: 16, border: "1px solid " + B.creme, marginBottom: 14 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: B.cafe, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 10, fontFamily: "'Montserrat',sans-serif" }}>🔮 Previsão de Conclusão com IA</div>
+            <Btn full onClick={() => runAI("previsao", "Obra: " + obra.nome + " | Avanço: " + obra.avanco + "% | IDP: " + obra.idp + " | Dias: " + obra.elap + "/" + obra.total + " | Atrasadas: " + obra.atras + ". Calcule: 1) Previsão de conclusão 2) Dias de atraso estimados 3) Como recuperar. Máx 150 palavras.")} disabled={aiLoad.previsao}>
+              {aiLoad.previsao ? "⏳ Calculando..." : "🤖 Gerar Previsão com IA"}
+            </Btn>
+            {aiOut.previsao && <div style={{ marginTop: 12, fontSize: 12, color: B.cafe, lineHeight: 1.7, whiteSpace: "pre-wrap", fontFamily: "'Montserrat',sans-serif" }}>{aiOut.previsao}</div>}
+          </div>
+          <div style={{ background: B.branco, borderRadius: 12, padding: 16, border: "1px solid " + B.creme }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: B.cafe, textTransform: "uppercase", marginBottom: 10, fontFamily: "'Montserrat',sans-serif" }}>Status das Tarefas</div>
+            {[["Concluídas", obra.conc, B.verde], ["Em Andamento", obra.emAnd, B.latte], ["Atrasadas", obra.atras, B.vermelho], ["Não Iniciadas", obra.naoIn, B.caramelo]].map(([l, v, c]) => (
+              <div key={l} style={{ marginBottom: 10 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+                  <span style={{ fontSize: 12, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>{l}</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: c, fontFamily: "'Montserrat',sans-serif" }}>{v}</span>
+                </div>
+                <Bar pct={v / obra.tarefas.length * 100} color={c} h={5} />
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tab === "tarefas" && (
+        <div>
+          <div style={{ display: "flex", gap: 6, marginBottom: 12, overflowX: "auto", paddingBottom: 4 }}>
+            {["Todos", "Concluído", "Em Andamento", "Atrasado", "Não Iniciado"].map(s => (
+              <button key={s} onClick={() => setFilterS(s)} style={{ padding: "6px 12px", borderRadius: 16, border: "1px solid " + (filterS === s ? statusColor(s) : B.creme), background: filterS === s ? statusColor(s) : "white", color: filterS === s ? "white" : B.caramelo, cursor: "pointer", fontSize: 11, fontWeight: 700, whiteSpace: "nowrap", minHeight: 34, fontFamily: "'Montserrat',sans-serif" }}>{s}</button>
+            ))}
+          </div>
+          <div style={{ background: B.branco, borderRadius: 12, border: "1px solid " + B.creme, overflow: "hidden" }}>
+            {obra.tarefas.filter(tk => filterS === "Todos" || tk.status === filterS).map((tk, i) => {
+              const blocked = isBlocked(tk, obra.tarefas);
+              const dl = daysLeft(tk, obra.elap);
+              const editing = editId === tk.id;
               return (
-                <button
-                  key={o.id}
-                  onClick={() => setSelectedObra(o.id)}
-                  style={{
-                    padding: 20,
-                    borderRadius: 16,
-                    border: `1px solid ${BRAND.creme}`,
-                    background: '#fff',
-                    cursor: 'pointer',
-                    textAlign: 'left',
-                    transition: 'all 0.2s',
-                    position: 'relative',
-                    overflow: 'hidden',
-                  }}
-                  onMouseEnter={(e) => {
-                    e.currentTarget.style.transform = 'translateY(-2px)';
-                    e.currentTarget.style.boxShadow = `0 8px 24px ${BRAND.cafeEscuro}12`;
-                  }}
-                  onMouseLeave={(e) => {
-                    e.currentTarget.style.transform = '';
-                    e.currentTarget.style.boxShadow = '';
-                  }}
-                >
-                  <div
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      right: 0,
-                      width: 4,
-                      height: '100%',
-                      background: statusColor,
-                    }}
-                  />
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'flex-start',
-                      marginBottom: 12,
-                    }}
-                  >
-                    <div>
-                      <h4
-                        style={{
-                          margin: 0,
-                          fontSize: 15,
-                          fontWeight: 700,
-                          color: BRAND.cafeEscuro,
-                        }}
-                      >
-                        {o.nome}
-                      </h4>
-                      <p
-                        style={{
-                          margin: '4px 0 0',
-                          fontSize: 12,
-                          color: BRAND.caramelo,
-                        }}
-                      >
-                        📍 {o.cidade} • 👤 {o.responsavel}
-                      </p>
+                <div key={tk.id} style={{ borderBottom: "1px solid " + B.creme }}>
+                  <div style={{ padding: "11px 13px", background: i % 2 === 0 ? B.offwhite : B.branco, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                    <div style={{ width: 22, height: 22, borderRadius: "50%", background: prioColor(tk.p), display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 700, color: "white", flexShrink: 0, marginTop: 1 }}>{tk.p}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 12, color: tk.status === "Atrasado" ? B.vermelho : B.cafe, fontWeight: tk.status === "Atrasado" ? 700 : 500, lineHeight: 1.35, fontFamily: "'Montserrat',sans-serif" }}>
+                            {tk.t}
+                            {blocked && <span style={{ marginLeft: 4, fontSize: 10 }}>🔒</span>}
+                            {dl <= 3 && dl >= 0 && tk.status !== "Concluído" && <span style={{ marginLeft: 4, fontSize: 10, color: B.laranja }}>⏰{dl}d</span>}
+                          </div>
+                          {tk.comentario && <div style={{ fontSize: 10, color: B.cinza, marginTop: 2, fontFamily: "'Montserrat',sans-serif" }}>💬 {tk.comentario}</div>}
+                        </div>
+                        <div style={{ display: "flex", gap: 7, alignItems: "center", flexShrink: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700, color: statusColor(tk.status), fontFamily: "'Montserrat',sans-serif" }}>{tk.progresso}%</div>
+                          <button onClick={() => { if (editing) { setEditId(null); } else { setEditId(tk.id); setEditData({ status: tk.status, progresso: tk.progresso, comentario: tk.comentario || "", responsavel: tk.responsavel || "" }); } }} style={{ background: editing ? B.caramelo : B.offwhite, border: "1px solid " + B.creme, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, color: editing ? "white" : B.caramelo, fontWeight: 700, minHeight: 32, fontFamily: "'Montserrat',sans-serif" }}>✏️</button>
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 5, display: "flex", gap: 7, alignItems: "center" }}>
+                        <Badge s={tk.status} />
+                        <div style={{ flex: 1 }}><Bar pct={tk.progresso} color={statusColor(tk.status)} h={4} /></div>
+                      </div>
                     </div>
-                    <span
-                      style={{
-                        fontSize: 11,
-                        fontWeight: 700,
-                        padding: '3px 10px',
-                        borderRadius: 8,
-                        background: `${statusColor}18`,
-                        color: statusColor,
-                      }}
-                    >
-                      {statusLabel}
-                    </span>
                   </div>
-                  <ProgressBar value={o.metrics.avancoFisico} height={8} />
-                  <div
-                    style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      marginTop: 12,
-                      fontSize: 12,
-                      color: BRAND.caramelo,
-                    }}
-                  >
-                    <span>
-                      ✅ {o.metrics.concluidas}/{o.metrics.total} tarefas
-                    </span>
-                    <span>⚠️ {o.metrics.atrasadas} atrasadas</span>
-                    <span>📅 {formatDate(o.prazoFinal)}</span>
-                  </div>
-                </button>
+                  {editing && (
+                    <div style={{ padding: "14px 13px", background: "#fffdf5", borderTop: "1px solid " + B.dourado + "33" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                        <div>
+                          <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>Status</label>
+                          <select value={editData.status} onChange={e => setEditData({ ...editData, status: e.target.value })} style={{ width: "100%", padding: "9px", borderRadius: 7, border: "1px solid " + B.creme, fontSize: 12, background: B.offwhite, minHeight: 42, fontFamily: "'Montserrat',sans-serif" }}>
+                            {["Não Iniciado", "Em Andamento", "Concluído", "Atrasado"].map(s => <option key={s} value={s}>{s}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>Progresso: {editData.progresso}%</label>
+                          <input type="range" min={0} max={100} step={5} value={editData.progresso} onChange={e => setEditData({ ...editData, progresso: Number(e.target.value) })} style={{ width: "100%", marginTop: 10 }} />
+                        </div>
+                      </div>
+                      <div style={{ marginBottom: 10 }}>
+                        <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>💬 Comentário</label>
+                        <textarea value={editData.comentario} onChange={e => setEditData({ ...editData, comentario: e.target.value })} placeholder="Observação ou atualização..." rows={2} style={{ width: "100%", padding: "9px", borderRadius: 7, border: "1px solid " + B.creme, fontSize: 12, fontFamily: "'Montserrat',sans-serif", resize: "vertical", boxSizing: "border-box" }} />
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <Btn onClick={() => { saveTask(tk.id, editData); setEditId(null); }} color={B.verde}>💾 Salvar</Btn>
+                        <Btn outline color={B.cinza} onClick={() => setEditId(null)}>Cancelar</Btn>
+                      </div>
+                    </div>
+                  )}
+                </div>
               );
             })}
           </div>
         </div>
-      </div>
-
-      {showNewModal && (
-        <NovaObraModal
-          onClose={() => setShowNewModal(false)}
-          onCreate={(newObra) => {
-            setShowNewModal(false);
-          }}
-        />
       )}
 
-      {/* Global styles */}
-      <style>{`
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-        ::-webkit-scrollbar { width: 6px; height: 6px; }
-        ::-webkit-scrollbar-track { background: ${BRAND.creme}; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb { background: ${BRAND.caramelo}66; border-radius: 3px; }
-        ::-webkit-scrollbar-thumb:hover { background: ${BRAND.caramelo}; }
-        @media (max-width: 768px) {
-          h1 { font-size: 22px !important; }
-        }
-        @media (max-width: 640px) {
-          div[style*="grid-template-columns: 1fr 1fr"] { grid-template-columns: 1fr !important; }
-          div[style*="grid-template-columns: repeat(auto-fit, minmax(180px"] { grid-template-columns: repeat(2, 1fr) !important; }
-        }
-      `}</style>
+      {tab === "gantt" && (
+        <div>
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+            <select value={filterP} onChange={e => setFilterP(e.target.value)} style={{ padding: "7px 10px", borderRadius: 7, border: "1px solid " + B.creme, fontSize: 11, background: B.offwhite, flex: 1, minWidth: 100, fontFamily: "'Montserrat',sans-serif" }}>
+              <option value="Todos">Todas Prioridades</option>
+              {[1, 2, 3, 4, 5, 6, 7].map(p => <option key={p} value={String(p)}>P{p}</option>)}
+            </select>
+            <select value={filterS} onChange={e => setFilterS(e.target.value)} style={{ padding: "7px 10px", borderRadius: 7, border: "1px solid " + B.creme, fontSize: 11, background: B.offwhite, flex: 1, minWidth: 100, fontFamily: "'Montserrat',sans-serif" }}>
+              <option value="Todos">Todos Status</option>
+              {["Concluído", "Em Andamento", "Atrasado", "Não Iniciado"].map(s => <option key={s} value={s}>{s}</option>)}
+            </select>
+            <label style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11, color: B.caramelo, cursor: "pointer", minHeight: 36, fontFamily: "'Montserrat',sans-serif" }}>
+              <input type="checkbox" checked={baseline} onChange={e => setBaseline(e.target.checked)} />Baseline
+            </label>
+            <button onClick={dlSVG} style={{ padding: "7px 12px", borderRadius: 7, border: "1px solid " + B.creme, background: B.branco, cursor: "pointer", fontSize: 11, fontWeight: 700, color: B.caramelo, fontFamily: "'Montserrat',sans-serif" }}>⬇ SVG</button>
+          </div>
+          <Gantt tarefas={obra.tarefas} elap={obra.elap} baseline={baseline} filterP={filterP} filterS={filterS} svgRef={svgRef} />
+        </div>
+      )}
+
+      {tab === "inaug" && (
+        <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 15, color: B.cafe, fontWeight: 700 }}>Checklist de Inauguração</div>
+            <div style={{ fontSize: 13, fontWeight: 700, color: obra.inauguracao.filter(i => i.done).length === obra.inauguracao.length ? B.verde : B.caramelo, fontFamily: "'Montserrat',sans-serif" }}>{obra.inauguracao.filter(i => i.done).length}/{obra.inauguracao.length}</div>
+          </div>
+          <Bar pct={obra.inauguracao.filter(i => i.done).length / obra.inauguracao.length * 100} color={B.latte} h={6} />
+          <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+            {obra.inauguracao.map(item => (
+              <div key={item.id} onClick={() => onUpdate({ ...obra, inauguracao: obra.inauguracao.map(i => i.id === item.id ? { ...i, done: !i.done } : i) })} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 8, border: "1px solid " + (item.done ? B.verde + "44" : B.creme), background: item.done ? "#e8f5e1" : B.offwhite, cursor: "pointer", minHeight: 46 }}>
+                <div style={{ width: 22, height: 22, borderRadius: "50%", border: "2px solid " + (item.done ? B.verde : B.creme), background: item.done ? B.verde : "white", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  {item.done && <span style={{ color: "white", fontSize: 12, fontWeight: 700 }}>✓</span>}
+                </div>
+                <span style={{ fontSize: 13, color: item.done ? B.verde : B.cafe, textDecoration: item.done ? "line-through" : "none", fontFamily: "'Montserrat',sans-serif" }}>{item.t}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {tab === "franqueado" && (
+        <FranqueadoTab obra={obra} onUpdate={onUpdate} isMobile={isMobile} />
+      )}
+
+      {tab === "custos" && (
+        <div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 9, marginBottom: 16 }}>
+            <KpiCard label="Previsto" value={fBRL(obra.cp)} icon="📋" color={B.cafe} />
+            <KpiCard label="Realizado" value={fBRL(obra.cr)} icon="💰" color={obra.cr > obra.cp ? B.vermelho : B.verde} />
+            <KpiCard label="Desvio" value={fBRL(Math.abs(obra.cr - obra.cp))} icon={obra.cr > obra.cp ? "📉" : "📈"} color={obra.cr > obra.cp ? B.vermelho : B.verde} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {obra.tarefas.map((tk, i) => {
+              const over = (tk.custo_realizado || 0) > (tk.custo_previsto || 0);
+              return (
+                <div key={tk.id} style={{ background: i % 2 === 0 ? B.offwhite : B.branco, borderRadius: 8, padding: "10px 13px", border: "1px solid " + B.creme }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, gap: 8 }}>
+                    <span style={{ fontSize: 12, color: B.cafe, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontFamily: "'Montserrat',sans-serif" }}>P{tk.p} — {tk.t}</span>
+                    <span style={{ fontSize: 10, color: B.cinza, flexShrink: 0, fontFamily: "'Montserrat',sans-serif" }}>{fBRL(tk.custo_previsto)}</span>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <input type="number" value={tk.custo_realizado || 0} onChange={e => saveTask(tk.id, { custo_realizado: Number(e.target.value) })} style={{ flex: 1, padding: "7px 9px", borderRadius: 6, border: "1px solid " + (over ? B.vermelho : B.creme), fontSize: 12, background: over ? "#fdecea" : B.branco, fontFamily: "'Montserrat',sans-serif", color: over ? B.vermelho : B.cafe, minHeight: 38 }} />
+                    <span style={{ fontSize: 12, fontWeight: 700, color: over ? B.vermelho : B.verde, flexShrink: 0 }}>{over ? "▲" : "✓"}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {tab === "ai" && (
+        <AITab obra={obra} atrs={atrs} ea={ea} aiOut={aiOut} aiLoad={aiLoad} runAI={runAI} />
+      )}
     </div>
+  );
+}
+
+function FranqueadoTab({ obra, onUpdate, isMobile }) {
+  const [f, setF] = useState({ franqueado: { ...obra.franqueado }, contato2: { ...obra.contato2 }, contato3: { ...obra.contato3 } });
+  const Section = ({ label, k, icon }) => (
+    <div style={{ background: B.branco, borderRadius: 12, padding: 16, border: "1px solid " + B.creme, marginBottom: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 12, fontFamily: "'Montserrat',sans-serif" }}>{icon} {label}</div>
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 8 }}>
+        {["nome", "telefone", "email", k === "franqueado" ? "cpf" : "cargo"].map(field => (
+          <Inp key={field} label={field === "cpf" ? "CPF/CNPJ" : field === "cargo" ? "Cargo" : field.charAt(0).toUpperCase() + field.slice(1)} value={f[k][field] || ""} onChange={v => setF({ ...f, [k]: { ...f[k], [field]: v } })} placeholder={field === "email" ? "email@email.com" : field === "telefone" ? "(00) 00000-0000" : ""} />
+        ))}
+      </div>
+      {f[k].telefone && (
+        <a href={"https://wa.me/55" + f[k].telefone.replace(/\D/g, "")} target="_blank" rel="noreferrer" style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "8px 14px", background: "#25d366", color: "white", borderRadius: 8, fontSize: 12, fontWeight: 700, textDecoration: "none", marginTop: 6, fontFamily: "'Montserrat',sans-serif" }}>📲 WhatsApp {label}</a>
+      )}
+    </div>
+  );
+  return (
+    <div>
+      <Section label="Franqueado" k="franqueado" icon="👤" />
+      <Section label="Contato 2" k="contato2" icon="👥" />
+      <Section label="Contato 3" k="contato3" icon="👥" />
+      <Btn full color={B.verde} onClick={() => onUpdate({ ...obra, ...f })}>💾 Salvar Contatos</Btn>
+    </div>
+  );
+}
+
+function AITab({ obra, atrs, ea, aiOut, aiLoad, runAI }) {
+  const [modo, setModo] = useState("analysis");
+  const MODOS = [
+    { k: "analysis", l: "🧠 Análise", p: "Especialista em gestão de implantações de franquias.\nObra: " + obra.nome + " | Resp: " + obra.resp + " | Dias: " + obra.elap + "/" + obra.total + " | Avanço: " + obra.avanco + "% | IDP: " + obra.idp + "\nStatus: " + obra.obraStatus + " | Atrasadas: " + obra.atras + " | " + atrs + "\nAndamento: " + ea + "\n1) Situação atual 2) Riscos 3) Prioridades imediatas 4) Próximos passos. Máx 280 palavras." },
+    { k: "whatsapp", l: "💬 WhatsApp", p: "Mensagem WhatsApp Business Ponto Alpha Café:\nObra: " + obra.nome + " | Status: " + obra.obraStatus + " | Avanço: " + obra.avanco + "%\nAtrasadas: " + atrs + " | Andamento: " + ea + "\nBreve, emojis, max 200 palavras." },
+    { k: "report", l: "📄 Relatório", p: "Relatório executivo Ponto Alpha Café:\nObra: " + obra.nome + " | Cidade: " + obra.cidade + " | Resp: " + obra.resp + "\nDias: " + obra.elap + "/" + obra.total + " | Avanço: " + obra.avanco + "% | IDP: " + obra.idp + " | Status: " + obra.obraStatus + "\nConc: " + obra.conc + "/" + obra.tarefas.length + " | Atrasadas: " + atrs + "\nRelatório profissional com análise, KPIs, riscos, recomendações. Máx 400 palavras." },
+  ];
+  const M = MODOS.find(m => m.k === modo);
+  return (
+    <div>
+      <div style={{ background: "linear-gradient(135deg," + B.cafe + "," + B.marrom + ")", borderRadius: 12, padding: "15px 18px", color: B.creme, marginBottom: 14 }}>
+        <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 15, fontWeight: 800 }}>🧠 Alpha Intelligence</div>
+        <div style={{ fontSize: 11, color: B.creme + "77", marginTop: 2, fontFamily: "'Montserrat',sans-serif" }}>IA integrada para análise e comunicação.</div>
+      </div>
+      <div style={{ display: "flex", gap: 6, marginBottom: 14, overflowX: "auto" }}>
+        {MODOS.map(m => (
+          <button key={m.k} onClick={() => setModo(m.k)} style={{ padding: "7px 14px", borderRadius: 20, border: "2px solid " + (modo === m.k ? B.cafe : B.creme), background: modo === m.k ? B.cafe : "white", color: modo === m.k ? B.creme : B.caramelo, cursor: "pointer", fontSize: 12, fontWeight: 700, whiteSpace: "nowrap", minHeight: 38, fontFamily: "'Montserrat',sans-serif" }}>{m.l}</button>
+        ))}
+      </div>
+      <Btn full onClick={() => runAI(modo, M.p)} disabled={aiLoad[modo]}>{aiLoad[modo] ? "⏳ Gerando…" : "✨ Gerar com IA"}</Btn>
+      {aiOut[modo] && (
+        <div style={{ background: B.offwhite, border: "1px solid " + B.creme, borderRadius: 12, padding: 16, marginTop: 14 }}>
+          <div style={{ whiteSpace: "pre-wrap", lineHeight: 1.75, fontSize: 12, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>{aiOut[modo]}</div>
+          <div style={{ display: "flex", gap: 7, marginTop: 12, flexWrap: "wrap" }}>
+            <Btn small outline color={B.caramelo} onClick={() => navigator.clipboard?.writeText(aiOut[modo])}>📋 Copiar</Btn>
+            {modo === "whatsapp" && <a href={"https://wa.me/?text=" + encodeURIComponent(aiOut[modo])} target="_blank" rel="noreferrer" style={{ padding: "6px 12px", borderRadius: 8, background: "#25d366", color: "white", fontSize: 11, fontWeight: 700, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "'Montserrat',sans-serif" }}>📲 WhatsApp</a>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function EquipeView({ obras, logs }) {
+  const byResp = useMemo(() => {
+    const m = {};
+    obras.forEach(o => o.tarefas.forEach(t => {
+      const r = t.responsavel || "Sem responsável";
+      if (!m[r]) m[r] = { nome: r, tarefas: [], obras: new Set() };
+      m[r].tarefas.push({ ...t, obraNome: o.nome });
+      m[r].obras.add(o.nome);
+    }));
+    return Object.values(m).map(r => ({ ...r, obras: Array.from(r.obras), conc: r.tarefas.filter(t => t.status === "Concluído").length, atras: r.tarefas.filter(t => t.status === "Atrasado").length }));
+  }, [obras]);
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Montserrat',sans-serif", color: B.cafe, margin: "0 0 14px", fontSize: 18, fontWeight: 800 }}>👥 Equipe</h2>
+      {byResp.map(r => (
+        <div key={r.nome} style={{ background: B.branco, borderRadius: 12, padding: 16, border: "1px solid " + B.creme, marginBottom: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>{r.nome}</div>
+              <div style={{ fontSize: 11, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>{r.obras.join(", ")}</div>
+            </div>
+            <div style={{ display: "flex", gap: 10 }}>
+              <span style={{ fontSize: 11, color: B.verde, fontFamily: "'Montserrat',sans-serif" }}>✅ {r.conc}</span>
+              {r.atras > 0 && <span style={{ fontSize: 11, color: B.vermelho, fontFamily: "'Montserrat',sans-serif" }}>⚠️ {r.atras}</span>}
+              <span style={{ fontSize: 11, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>{r.tarefas.length} total</span>
+            </div>
+          </div>
+          <Bar pct={r.conc / r.tarefas.length * 100} color={r.atras > 0 ? B.laranja : B.verde} h={4} />
+          <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {r.tarefas.filter(t => t.status !== "Concluído").slice(0, 3).map(t => (
+              <span key={t.id} style={{ background: statusBg(t.status), color: statusColor(t.status), padding: "2px 8px", borderRadius: 12, fontSize: 10, fontFamily: "'Montserrat',sans-serif" }}>{t.t.slice(0, 25)}</span>
+            ))}
+          </div>
+        </div>
+      ))}
+      <h3 style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 15, color: B.cafe, margin: "16px 0 10px", fontWeight: 700 }}>Log de Ações</h3>
+      {logs.length === 0
+        ? <div style={{ textAlign: "center", padding: 24, color: B.cinza, fontSize: 12, fontFamily: "'Montserrat',sans-serif" }}>Nenhuma ação registrada.</div>
+        : [...logs].reverse().slice(0, 20).map((l, i) => (
+          <div key={i} style={{ background: B.branco, borderRadius: 8, padding: "10px 13px", border: "1px solid " + B.creme, marginBottom: 6 }}>
+            <div style={{ fontSize: 11, color: B.cafe, fontWeight: 600, fontFamily: "'Montserrat',sans-serif" }}>{l.obra} · {l.tarefa}</div>
+            <div style={{ fontSize: 10, color: B.cinza, marginTop: 2, fontFamily: "'Montserrat',sans-serif" }}>{l.campo}: {l.de} → <strong style={{ color: B.caramelo }}>{l.para}</strong></div>
+            <div style={{ fontSize: 9, color: B.cinza, marginTop: 2, fontFamily: "'Montserrat',sans-serif" }}>{new Date(l.ts).toLocaleString("pt-BR").slice(0, 16)}</div>
+          </div>
+        ))
+      }
+    </div>
+  );
+}
+
+function RelatoriosView({ obras }) {
+  const [tipo, setTipo] = useState("mensal");
+  const [out, setOut] = useState("");
+  const [load, setLoad] = useState(false);
+  const TIPOS = [{ id: "mensal", l: "📅 Mensal" }, { id: "comparativo", l: "📊 Comparativo" }, { id: "urgencias", l: "⚠️ Urgências" }, { id: "executivo", l: "🎯 Executivo" }];
+  const run = async () => {
+    setLoad(true); setOut("");
+    const base = "Ponto Alpha Café — " + obras.length + " obras — Avanço médio: " + Math.round(obras.reduce((a, o) => a + o.avanco, 0) / obras.length) + "%\n" + obras.map(o => o.nome + ": " + o.avanco + "% (" + o.obraStatus + ") IDP:" + o.idp + " Atras:" + o.atras).join("\n");
+    const prompts = { mensal: "Relatório mensal consolidado. " + base + "\nAnálise mensal, KPIs, realizações, próximas ações. Máx 400 palavras.", comparativo: "Comparativo entre implantações. " + base + "\nCompare IDP, PPC, avanço, performance. Máx 350 palavras.", urgencias: "Relatório de urgências. " + base + "\nFoco em tarefas críticas, atrasos, ações imediatas. Máx 300 palavras.", executivo: "Resumo executivo para sócios. " + base + "\nVisão estratégica, riscos, oportunidades, decisões. Máx 300 palavras." };
+    try { const r = await callAI(prompts[tipo]); setOut(r); } catch { setOut("Erro."); }
+    setLoad(false);
+  };
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Montserrat',sans-serif", color: B.cafe, margin: "0 0 14px", fontSize: 18, fontWeight: 800 }}>📄 Relatórios</h2>
+      <Tabs tabs={TIPOS} active={tipo} onChange={setTipo} />
+      <div style={{ height: 14 }} />
+      <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
+        <Btn onClick={run} disabled={load}>{load ? "⏳ Gerando..." : "📄 Gerar com IA"}</Btn>
+        {out && <Btn outline color={B.caramelo} onClick={() => navigator.clipboard?.writeText(out)}>📋 Copiar</Btn>}
+      </div>
+      {out && <div style={{ background: B.offwhite, border: "1px solid " + B.creme, borderRadius: 12, padding: 18, whiteSpace: "pre-wrap", lineHeight: 1.8, fontSize: 12, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>{out}</div>}
+    </div>
+  );
+}
+
+function WhatsAppView({ obras, contatos, setContatos, agend, setAgend }) {
+  const [tab, setTab] = useState("envio");
+  const [selId, setSelId] = useState(obras[0].id);
+  const [msg, setMsg] = useState("");
+  const [load, setLoad] = useState(false);
+  const [nc, setNc] = useState({ nome: "", telefone: "", tipo: "Franqueado", obra_id: "" });
+  const obra = obras.find(o => o.id === selId);
+  const DIAS = [{ id: "seg", l: "Segunda" }, { id: "qua", l: "Quarta" }, { id: "sex", l: "Sexta" }];
+
+  const gen = async () => {
+    setLoad(true); setMsg("");
+    try {
+      const r = await callAI("Mensagem WhatsApp Business Ponto Alpha Café.\nObra: " + obra.nome + " | Status: " + obra.obraStatus + " | Avanço: " + obra.avanco + "%\nAtrasadas: " + obra.tarefas.filter(t => t.status === "Atrasado").map(t => t.t).join(", ") + "\nAndamento: " + obra.tarefas.filter(t => t.status === "Em Andamento").map(t => t.t).slice(0, 3).join(", ") + "\nBreve, emojis, max 200 palavras.");
+      setMsg(r);
+    } catch { setMsg("Erro."); }
+    setLoad(false);
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Montserrat',sans-serif", color: B.cafe, margin: "0 0 14px", fontSize: 18, fontWeight: 800 }}>💬 WhatsApp</h2>
+      <Tabs tabs={[{ id: "envio", l: "📤 Envio" }, { id: "agendamento", l: "⏰ Agendamento" }, { id: "contatos", l: "👥 Contatos" }]} active={tab} onChange={setTab} />
+      <div style={{ height: 14 }} />
+
+      {tab === "envio" && (
+        <div>
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", letterSpacing: "0.5px", display: "block", marginBottom: 4, fontFamily: "'Montserrat',sans-serif" }}>Obra</label>
+            <select value={selId} onChange={e => setSelId(Number(e.target.value))} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid " + B.creme, fontSize: 13, background: B.offwhite, minHeight: 44, fontFamily: "'Montserrat',sans-serif" }}>
+              {obras.map(o => <option key={o.id} value={o.id}>{o.nome}</option>)}
+            </select>
+          </div>
+          <Btn full onClick={gen} disabled={load} color="#25d366">{load ? "⏳ Gerando..." : "📱 Gerar Mensagem com IA"}</Btn>
+          {msg && (
+            <>
+              <div style={{ background: "#e9ffdb", borderRadius: 12, padding: 14, fontSize: 12, lineHeight: 1.7, color: "#1a1a1a", whiteSpace: "pre-wrap", marginTop: 12, marginBottom: 10, border: "1px solid #c3f0c8", fontFamily: "'Montserrat',sans-serif" }}>{msg}</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                <Btn small outline color={B.caramelo} onClick={() => navigator.clipboard?.writeText(msg)}>📋 Copiar</Btn>
+                <a href={"https://wa.me/?text=" + encodeURIComponent(msg)} target="_blank" rel="noreferrer" style={{ padding: "6px 12px", borderRadius: 8, background: "#25d366", color: "white", fontSize: 11, fontWeight: 700, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "'Montserrat',sans-serif" }}>📲 Abrir WhatsApp</a>
+                {obra && obra.franqueado && obra.franqueado.telefone && (
+                  <a href={"https://wa.me/55" + obra.franqueado.telefone.replace(/\D/g, "") + "?text=" + encodeURIComponent(msg)} target="_blank" rel="noreferrer" style={{ padding: "6px 12px", borderRadius: 8, background: B.cafe, color: B.creme, fontSize: 11, fontWeight: 700, textDecoration: "none", display: "inline-flex", alignItems: "center", gap: 4, fontFamily: "'Montserrat',sans-serif" }}>📲 Franqueado</a>
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {tab === "agendamento" && (
+        <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>Envio Automático (08:00)</div>
+            <div onClick={() => setAgend({ ...agend, ativo: !agend.ativo })} style={{ width: 46, height: 26, borderRadius: 13, background: agend.ativo ? B.verde : B.creme, position: "relative", cursor: "pointer", transition: "background .2s" }}>
+              <div style={{ width: 20, height: 20, borderRadius: "50%", background: "white", position: "absolute", top: 3, left: agend.ativo ? 23 : 3, transition: "left .2s", boxShadow: "0 1px 3px rgba(0,0,0,.2)" }} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", marginBottom: 8, fontFamily: "'Montserrat',sans-serif" }}>Dias de Envio</div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {DIAS.map(d => (
+                <button key={d.id} onClick={() => { const dias = agend.dias.includes(d.id) ? agend.dias.filter(x => x !== d.id) : [...agend.dias, d.id]; setAgend({ ...agend, dias }); }} style={{ flex: 1, padding: "9px", borderRadius: 10, border: "2px solid " + (agend.dias.includes(d.id) ? B.cafe : B.creme), background: agend.dias.includes(d.id) ? B.cafe : "white", color: agend.dias.includes(d.id) ? B.creme : B.caramelo, cursor: "pointer", fontSize: 12, fontWeight: 700, minHeight: 42, fontFamily: "'Montserrat',sans-serif" }}>{d.l}</button>
+              ))}
+            </div>
+          </div>
+          <div style={{ background: B.offwhite, borderRadius: 8, padding: 12, fontSize: 11, color: B.caramelo, lineHeight: 1.7, marginBottom: 12, fontFamily: "'Montserrat',sans-serif" }}>
+            <div>Status: <strong>{agend.ativo ? "Agendado ✓" : "Inativo"}</strong></div>
+            <div>Próximo envio: <strong>{agend.ativo && agend.dias.length > 0 ? (DIAS.find(d => agend.dias.includes(d.id))?.l || "-") + " às 08:00" : "—"}</strong></div>
+            {agend.ultimoEnvio && <div>Último: <strong>{new Date(agend.ultimoEnvio).toLocaleString("pt-BR").slice(0, 16)}</strong></div>}
+          </div>
+          <Btn full onClick={async () => { setLoad(true); try { const r = await callAI("Resumo semanal WhatsApp Ponto Alpha Café.\n" + obras.map(o => o.nome + ": " + o.avanco + "% (" + o.obraStatus + ")").join("\n") + "\nBreve, profissional, emojis. Máx 200 palavras."); setMsg(r); setAgend({ ...agend, ultimoEnvio: new Date().toISOString() }); setTab("envio"); } catch {} setLoad(false); }} disabled={load}>{load ? "⏳ Gerando..." : "📤 Gerar e Enviar Agora"}</Btn>
+        </div>
+      )}
+
+      {tab === "contatos" && (
+        <div>
+          <div style={{ background: B.branco, borderRadius: 12, padding: 16, border: "1px solid " + B.creme, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", marginBottom: 12, fontFamily: "'Montserrat',sans-serif" }}>Novo Contato</div>
+            <Inp label="Nome" value={nc.nome} onChange={v => setNc({ ...nc, nome: v })} />
+            <Inp label="Telefone" value={nc.telefone} onChange={v => setNc({ ...nc, telefone: v })} placeholder="(00) 00000-0000" />
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+              <div>
+                <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", display: "block", marginBottom: 4, fontFamily: "'Montserrat',sans-serif" }}>Tipo</label>
+                <select value={nc.tipo} onChange={e => setNc({ ...nc, tipo: e.target.value })} style={{ width: "100%", padding: "10px", borderRadius: 8, border: "1px solid " + B.creme, fontSize: 12, background: B.offwhite, minHeight: 42, fontFamily: "'Montserrat',sans-serif" }}>
+                  {["Franqueado", "Responsável", "Engenheiro", "Arquiteto", "Equipe"].map(t => <option key={t}>{t}</option>)}
+                </select>
+              </div>
+              <div>
+                <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", display: "block", marginBottom: 4, fontFamily: "'Montserrat',sans-serif" }}>Obra</label>
+                <select value={nc.obra_id} onChange={e => setNc({ ...nc, obra_id: e.target.value })} style={{ width: "100%", padding: "10px", borderRadius: 8, border: "1px solid " + B.creme, fontSize: 12, background: B.offwhite, minHeight: 42, fontFamily: "'Montserrat',sans-serif" }}>
+                  <option value="">Todas</option>
+                  {obras.map(o => <option key={o.id} value={o.id}>{o.nome.split("—")[0].trim()}</option>)}
+                </select>
+              </div>
+            </div>
+            <div style={{ height: 10 }} />
+            <Btn full color={B.verde} onClick={() => { if (!nc.nome || !nc.telefone) return; setContatos([...contatos, { ...nc, id: Date.now() }]); setNc({ nome: "", telefone: "", tipo: "Franqueado", obra_id: "" }); }}>+ Adicionar Contato</Btn>
+          </div>
+          {contatos.length === 0
+            ? <div style={{ textAlign: "center", padding: 24, color: B.cinza, fontSize: 12, fontFamily: "'Montserrat',sans-serif" }}>Nenhum contato cadastrado.</div>
+            : contatos.map(c => (
+              <div key={c.id} style={{ background: B.branco, borderRadius: 8, padding: "11px 13px", border: "1px solid " + B.creme, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 12, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>{c.nome} <span style={{ fontSize: 10, color: B.caramelo }}>({c.tipo})</span></div>
+                  <div style={{ fontSize: 11, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>{c.telefone}</div>
+                </div>
+                <div style={{ display: "flex", gap: 7 }}>
+                  <a href={"https://wa.me/55" + c.telefone.replace(/\D/g, "")} target="_blank" rel="noreferrer" style={{ padding: "7px 11px", borderRadius: 7, background: "#25d366", color: "white", fontSize: 11, fontWeight: 700, textDecoration: "none", display: "flex", alignItems: "center", minHeight: 36 }}>📲</a>
+                  <button onClick={() => setContatos(contatos.filter(x => x.id !== c.id))} style={{ padding: "7px 11px", borderRadius: 7, background: "#fdecea", border: "none", cursor: "pointer", fontSize: 11, color: B.vermelho, fontWeight: 700, minHeight: 36, fontFamily: "'Montserrat',sans-serif" }}>✕</button>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ConfigView({ obras, templates, setTemplates }) {
+  const [tab, setTab] = useState("import");
+  const [msg, setMsg] = useState("");
+  const [novoTpl, setNovoTpl] = useState({ nome: "", descricao: "" });
+
+  const handleFile = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const txt = await file.text();
+    const lines = txt.trim().split("\n").filter(Boolean);
+    if (lines.length < 2) { setMsg("❌ Arquivo inválido."); return; }
+    const hdrs = lines[0].split(",").map(h => h.replace(/"/g, "").trim());
+    const tarefas = lines.slice(1).map((line, i) => {
+      const vals = line.split(",").map(v => v.replace(/"/g, "").trim());
+      const o = {};
+      hdrs.forEach((h, j) => o[h] = vals[j] || "");
+      return { id: i + 1, p: parseInt(o["Prioridade"]) || 1, t: o["Tarefa"] || "Tarefa " + (i + 1), w: parseFloat(o["Peso"]) || 0.02, s: parseInt(o["Início(dias)"]) || 0, d: parseInt(o["Duração(dias)"]) || 5, dep: parseInt(o["Dependência"]) || null, progresso: 0, status: "Não Iniciado", comentario: "", responsavel: o["Responsável"] || "", custo_previsto: parseInt(o["Custo Previsto"]) || 2000, custo_realizado: 0 };
+    });
+    setMsg("✅ " + tarefas.length + " tarefas importadas!");
+    setTemplates([...templates, { id: Date.now(), nome: file.name.replace(".csv", ""), descricao: "Importado em " + new Date().toLocaleDateString("pt-BR"), tarefas }]);
+  };
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Montserrat',sans-serif", color: B.cafe, margin: "0 0 14px", fontSize: 18, fontWeight: 800 }}>⚙️ Configurações</h2>
+      <Tabs tabs={[{ id: "import", l: "📥 Importar" }, { id: "export", l: "📤 Exportar" }, { id: "templates", l: "📋 Templates" }]} active={tab} onChange={setTab} />
+      <div style={{ height: 14 }} />
+
+      {tab === "import" && (
+        <div style={{ background: B.branco, borderRadius: 12, padding: 20, border: "1px solid " + B.creme }}>
+          <div style={{ fontWeight: 700, fontSize: 14, color: B.cafe, marginBottom: 6, fontFamily: "'Montserrat',sans-serif" }}>Importar Planilha CSV</div>
+          <div style={{ fontSize: 12, color: B.cinza, lineHeight: 1.6, marginBottom: 14, fontFamily: "'Montserrat',sans-serif" }}>Importe um CSV com a estrutura de tarefas para criar um template de implantação.</div>
+          <div style={{ border: "2px dashed " + B.creme, borderRadius: 10, padding: "24px", textAlign: "center", marginBottom: 12 }}>
+            <div style={{ fontSize: 28, marginBottom: 6 }}>📥</div>
+            <label style={{ cursor: "pointer", display: "block" }}>
+              <span style={{ fontSize: 13, fontWeight: 700, color: B.caramelo, fontFamily: "'Montserrat',sans-serif" }}>Selecionar arquivo CSV</span>
+              <input type="file" accept=".csv" onChange={handleFile} style={{ display: "none" }} />
+            </label>
+          </div>
+          {msg && <div style={{ background: msg.startsWith("✅") ? "#e8f5e1" : "#fdecea", padding: 10, borderRadius: 8, fontSize: 12, color: msg.startsWith("✅") ? B.verde : B.vermelho, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>{msg}</div>}
+        </div>
+      )}
+
+      {tab === "export" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: B.cafe, marginBottom: 6, fontFamily: "'Montserrat',sans-serif" }}>Modelo CSV para Excel</div>
+            <div style={{ fontSize: 12, color: B.cinza, lineHeight: 1.6, marginBottom: 12, fontFamily: "'Montserrat',sans-serif" }}>37 tarefas padrão. Edite no Excel e reimporte como template.</div>
+            <Btn full onClick={exportCSV}>⬇️ Baixar Modelo CSV</Btn>
+          </div>
+          <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: B.cafe, marginBottom: 6, fontFamily: "'Montserrat',sans-serif" }}>PDF Consolidado</div>
+            <Btn full outline color={B.caramelo} onClick={() => {
+              const w = window.open("", "_blank");
+              if (!w) return;
+              w.document.write("<!DOCTYPE html><html><head><title>Relatório</title><style>body{font-family:'Montserrat',sans-serif;padding:36px;max-width:760px;margin:0 auto;color:#2c1810}h1{border-bottom:3px solid #c4a478;padding-bottom:8px}table{width:100%;border-collapse:collapse;font-size:12px}th{background:#2c1810;color:#f5ebe0;padding:7px 10px;text-align:left}td{padding:7px 10px;border-bottom:1px solid #f5ebe0}tr:nth-child(even){background:#faf6f1}</style></head><body><h1>Relatório Consolidado — Alpha Implantações</h1><table><tr><th>Obra</th><th>Status</th><th>Avanço</th><th>IDP</th><th>Atrasadas</th></tr>" + obras.map(o => "<tr><td>" + o.nome + "</td><td>" + o.obraStatus + "</td><td>" + o.avanco + "%</td><td>" + o.idp + "</td><td>" + o.atras + "</td></tr>").join("") + "</table></body></html>");
+              w.document.close();
+              setTimeout(() => w.print(), 400);
+            }}>📑 PDF Consolidado</Btn>
+          </div>
+        </div>
+      )}
+
+      {tab === "templates" && (
+        <div>
+          <div style={{ background: B.branco, borderRadius: 12, padding: 16, border: "1px solid " + B.creme, marginBottom: 12 }}>
+            <Inp label="Nome do Template" value={novoTpl.nome} onChange={v => setNovoTpl({ ...novoTpl, nome: v })} placeholder="Ex: Quiosque Shopping" />
+            <Btn full color={B.verde} onClick={() => { if (!novoTpl.nome) return; setTemplates([...templates, { id: Date.now(), ...novoTpl, tarefas: TT, origem: "padrao" }]); setNovoTpl({ nome: "", descricao: "" }); }}>+ Criar Template Padrão</Btn>
+          </div>
+          {[{ id: 0, nome: "Template Padrão", descricao: "37 tarefas oficiais Ponto Alpha", tarefas: TT }, ...templates].map((t, i) => (
+            <div key={t.id} style={{ background: B.branco, borderRadius: 8, padding: "12px 14px", border: "1px solid " + B.creme, display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 7 }}>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 12, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>{t.nome}{i === 0 && <span style={{ marginLeft: 6, background: B.creme, color: B.caramelo, padding: "1px 7px", borderRadius: 10, fontSize: 9, fontWeight: 700 }}>OFICIAL</span>}</div>
+                <div style={{ fontSize: 11, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>{t.descricao} · {(t.tarefas || []).length} tarefas</div>
+              </div>
+              {i > 0 && <button onClick={() => setTemplates(templates.filter(x => x.id !== t.id))} style={{ padding: "6px 10px", borderRadius: 6, background: "#fdecea", border: "none", cursor: "pointer", fontSize: 11, color: B.vermelho, fontWeight: 700, minHeight: 34, fontFamily: "'Montserrat',sans-serif" }}>✕</button>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function NovaObra({ onBack, templates, onCriar, isMobile }) {
+  const [f, setF] = useState({ nome: "", cidade: "", endereco: "", resp: "", dataBase: "", obs: "" });
+  const criar = () => {
+    if (!f.nome || !f.dataBase) { alert("Preencha nome e data base."); return; }
+    const prog = new Array(37).fill(0);
+    const nova = makeObra(Date.now(), f.nome, f.cidade, f.endereco, f.dataBase, f.resp, prog);
+    onCriar({ ...nova, obs: f.obs });
+    onBack();
+  };
+  return (
+    <div>
+      <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", color: B.caramelo, fontSize: 13, fontWeight: 700, padding: "4px 0", marginBottom: 16, fontFamily: "'Montserrat',sans-serif" }}>← Voltar</button>
+      <div style={{ background: B.branco, borderRadius: 16, padding: isMobile ? "18px 16px" : "24px", border: "1px solid " + B.creme }}>
+        <h2 style={{ fontFamily: "'Montserrat',sans-serif", color: B.cafe, margin: "0 0 20px", fontSize: 18, fontWeight: 800 }}>Nova Implantação</h2>
+        <Inp label="Nome da Obra / Unidade" value={f.nome} onChange={v => setF({ ...f, nome: v })} placeholder="Ex: Brasília — Shopping Conjunto Nacional" />
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10 }}>
+          <Inp label="Cidade" value={f.cidade} onChange={v => setF({ ...f, cidade: v })} placeholder="Ex: Brasília-DF" />
+          <Inp label="Responsável" value={f.resp} onChange={v => setF({ ...f, resp: v })} placeholder="Nome do responsável" />
+        </div>
+        <Inp label="Endereço" value={f.endereco} onChange={v => setF({ ...f, endereco: v })} placeholder="Endereço completo" />
+        <Inp label="Data Base (Início)" value={f.dataBase} onChange={v => setF({ ...f, dataBase: v })} type="date" />
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", display: "block", marginBottom: 4, fontFamily: "'Montserrat',sans-serif" }}>Observações</label>
+          <textarea value={f.obs} onChange={e => setF({ ...f, obs: e.target.value })} rows={2} style={{ width: "100%", padding: "10px 12px", borderRadius: 8, border: "1px solid " + B.creme, fontSize: 13, fontFamily: "'Montserrat',sans-serif", resize: "vertical", boxSizing: "border-box" }} />
+        </div>
+        <div style={{ background: B.offwhite, borderRadius: 8, padding: 12, marginBottom: 16, fontSize: 12, color: B.caramelo, lineHeight: 1.6, fontFamily: "'Montserrat',sans-serif" }}>✨ Sistema gerará automaticamente o checklist com <strong>37 tarefas</strong> e o Gantt.</div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Btn outline color={B.cinza} onClick={onBack}>Cancelar</Btn>
+          <Btn onClick={criar}>🏗️ Criar Implantação</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── APP ─────────────────────────────────────────────────────────────────────
+export default function App() {
+  const isMobile = useIsMobile();
+  const [screen, setScreen] = useState("landing"); // landing | login | signup | forgot | app
+  const [user, setUser] = useState(null);
+  const [obras, setObras] = useState(OBRAS_DEFAULT);
+  const [logs, setLogs] = useState([]);
+  const [contatos, setContatos] = useState([]);
+  const [templates, setTemplates] = useState([]);
+  const [agend, setAgend] = useState({ ativo: false, dias: ["seg", "qua", "sex"], hora: "08:00", ultimoEnvio: null });
+  const [loaded, setLoaded] = useState(false);
+  const [view, setView] = useState("home");
+  const [selObra, setSelObra] = useState(null);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      const oo = await store.get("ai-obras-v2", null); if (oo) setObras(oo);
+      const ll = await store.get("ai-logs-v2", []); setLogs(ll);
+      const cc = await store.get("ai-contatos-v2", []); setContatos(cc);
+      const tt = await store.get("ai-templates-v2", []); setTemplates(tt);
+      const ag = await store.get("ai-agend-v2", { ativo: false, dias: ["seg", "qua", "sex"], hora: "08:00", ultimoEnvio: null }); setAgend(ag);
+      setLoaded(true);
+    })();
+  }, []);
+
+  useEffect(() => { if (loaded) store.set("ai-obras-v2", obras); }, [obras, loaded]);
+  useEffect(() => { if (loaded) store.set("ai-logs-v2", logs); }, [logs, loaded]);
+  useEffect(() => { if (loaded) store.set("ai-contatos-v2", contatos); }, [contatos, loaded]);
+  useEffect(() => { if (loaded) store.set("ai-templates-v2", templates); }, [templates, loaded]);
+  useEffect(() => { if (loaded) store.set("ai-agend-v2", agend); }, [agend, loaded]);
+
+  const addLog = useCallback((obraNome, tarefa, campo, de, para) => {
+    setLogs(prev => [...prev, { id: Date.now(), ts: new Date().toISOString(), obra: obraNome, tarefa, campo, de, para }]);
+  }, []);
+
+  const handleUpdate = useCallback((updated) => {
+    const r = recalc(updated);
+    setObras(prev => prev.map(o => o.id === r.id ? r : o));
+    setSelObra(r);
+  }, []);
+
+  const handleSelect = useCallback((obra) => { setSelObra(obra); setView("obra-detail"); }, []);
+  const handleCriar = useCallback((nova) => { setObras(prev => [...prev, nova]); }, []);
+  const handleLogout = () => { setUser(null); setView("home"); setSidebarOpen(false); setScreen("landing"); };
+
+  const alertCount = obras.reduce((a, o) => a + o.tarefas.filter(t => t.status === "Atrasado" || (daysLeft(t, o.elap) <= 3 && t.status !== "Concluído")).length, 0);
+
+  // ── Screens ────────────────────────────────────────────────────────────────
+  if (screen === "landing") return (
+    <>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
+      <LandingScreen onAccess={() => setScreen("login")} />
+    </>
+  );
+
+  if (screen === "login") return (
+    <>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
+      <LoginScreen onLogin={(u) => { setUser(u); setScreen("app"); }} onSignup={() => setScreen("signup")} onForgot={() => setScreen("forgot")} />
+    </>
+  );
+
+  if (screen === "forgot") return (
+    <>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
+      <ForgotPasswordScreen onBack={() => setScreen("login")} />
+    </>
+  );
+
+  if (screen === "signup") return (
+    <>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
+      <SignupScreen onBack={() => setScreen("login")} onCadastrar={() => setScreen("login")} />
+    </>
+  );
+
+  // ── Main App ───────────────────────────────────────────────────────────────
+  if (!loaded) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "'Montserrat',sans-serif", color: B.caramelo }}>⏳ Carregando…</div>;
+
+  return (
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Montserrat', sans-serif; background: ${B.offwhite}; }
+        button, input, select, textarea { font-family: 'Montserrat', sans-serif; outline: none; }
+        ::-webkit-scrollbar { width: 4px; height: 4px; }
+        ::-webkit-scrollbar-track { background: ${B.creme}; }
+        ::-webkit-scrollbar-thumb { background: ${B.caramelo}; border-radius: 3px; }
+      `}</style>
+      <div style={{ display: "flex", minHeight: "100vh" }}>
+        <Sidebar view={view} setView={setView} isMobile={isMobile} open={sidebarOpen} onClose={() => setSidebarOpen(false)} alertCount={alertCount} user={user} onLogout={handleLogout} />
+        <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+          <TopBar isMobile={isMobile} onMenu={() => setSidebarOpen(true)} alertCount={alertCount} view={view} selObra={selObra} user={user} onLogout={handleLogout} />
+          <div style={{ flex: 1, padding: isMobile ? "0 16px 24px" : "0 26px 24px", overflowX: "hidden" }}>
+            {view === "home" && <HomeView obras={obras} onSelect={handleSelect} logs={logs} isMobile={isMobile} />}
+            {view === "obra-detail" && selObra && <ObraDetail obra={selObra} onBack={() => setView("home")} onUpdate={handleUpdate} addLog={addLog} isMobile={isMobile} />}
+            {view === "nova" && <NovaObra onBack={() => setView("home")} templates={templates} onCriar={handleCriar} isMobile={isMobile} />}
+            {view === "equipe" && <EquipeView obras={obras} logs={logs} />}
+            {view === "relatorios" && <RelatoriosView obras={obras} />}
+            {view === "whatsapp" && <WhatsAppView obras={obras} contatos={contatos} setContatos={setContatos} agend={agend} setAgend={setAgend} />}
+            {view === "config" && <ConfigView obras={obras} templates={templates} setTemplates={setTemplates} />}
+          </div>
+        </div>
+      </div>
+    </>
   );
 }
