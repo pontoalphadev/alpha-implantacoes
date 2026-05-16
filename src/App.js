@@ -28,31 +28,101 @@ const store = {
   }
 };
 
-// ─── USER STORE (persiste usuários cadastrados no localStorage) ───────────────
+// ─── USERS & PERMISSIONS ──────────────────────────────────────────────────────
+// Admins fixos do sistema: sempre existem, não podem ser removidos
+const FIXED_ADMINS = [
+  { email: "lucas@pontoacafe.com.br", nome: "Lucas", senha: "alpha2026" },
+  { email: "israel.daywis@gmail.com", nome: "Israel", senha: "alpha2026" },
+  { email: "admin@pontoacafe.com",    nome: "Admin Demo", senha: "alpha2026" }
+];
+
+// Estrutura de usuário:
+// { nome, email, senha, role: "admin" | "user",
+//   status: "pendente" | "aprovado" | "bloqueado",
+//   permissoes: { todas: bool, obras: [obraIds], viewOnly: bool },
+//   approvedBy, approvedAt, createdAt, isFixed: bool }
+
 const userStore = {
   getAll() {
-    try { const v = localStorage.getItem("ai-users-v1"); return v ? JSON.parse(v) : []; } catch { return []; }
+    try { const v = localStorage.getItem("ai-users-v2"); return v ? JSON.parse(v) : []; } catch { return []; }
   },
   save(users) {
-    try { localStorage.setItem("ai-users-v1", JSON.stringify(users)); } catch {}
+    try { localStorage.setItem("ai-users-v2", JSON.stringify(users)); } catch {}
+  },
+  init() {
+    const users = userStore.getAll();
+    let changed = false;
+    FIXED_ADMINS.forEach(a => {
+      const existing = users.find(u => u.email === a.email.toLowerCase());
+      if (!existing) {
+        users.push({
+          nome: a.nome, email: a.email.toLowerCase(), senha: a.senha,
+          role: "admin", status: "aprovado",
+          permissoes: { todas: true, obras: [], viewOnly: false },
+          createdAt: new Date().toISOString(), isFixed: true
+        });
+        changed = true;
+      } else if (!existing.isFixed) {
+        existing.isFixed = true; existing.role = "admin"; existing.status = "aprovado";
+        existing.permissoes = { todas: true, obras: [], viewOnly: false };
+        changed = true;
+      }
+    });
+    if (changed) userStore.save(users);
   },
   add(nome, email, senha) {
     const users = userStore.getAll();
     const emailNorm = email.trim().toLowerCase();
     if (users.find(u => u.email === emailNorm)) return { ok: false, erro: "Este email já está cadastrado." };
-    users.push({ nome: nome.trim(), email: emailNorm, senha: senha.trim() });
+    users.push({
+      nome: nome.trim(), email: emailNorm, senha: senha.trim(),
+      role: "user", status: "pendente",
+      permissoes: { todas: false, obras: [], viewOnly: true },
+      createdAt: new Date().toISOString(), isFixed: false
+    });
     userStore.save(users);
     return { ok: true };
   },
-  find(email, senha) {
+  authenticate(email, senha) {
     const emailNorm = email.trim().toLowerCase();
     const senhaNorm = senha.trim();
-    // admin fixo
-    if (emailNorm === VALID_USER.email.toLowerCase() && senhaNorm === VALID_USER.senha) return VALID_USER;
-    // usuários cadastrados
     const users = userStore.getAll();
-    return users.find(u => u.email === emailNorm && u.senha === senhaNorm) || null;
+    const user = users.find(u => u.email === emailNorm && u.senha === senhaNorm);
+    if (!user) return { ok: false, erro: "Email ou senha incorretos." };
+    if (user.status === "bloqueado") return { ok: false, erro: "Sua conta foi bloqueada. Contate um administrador." };
+    return { ok: true, user };
+  },
+  update(email, updates) {
+    const users = userStore.getAll();
+    const u = users.find(x => x.email === email.toLowerCase());
+    if (!u) return false;
+    Object.assign(u, updates);
+    userStore.save(users);
+    return true;
+  },
+  remove(email) {
+    const users = userStore.getAll();
+    const u = users.find(x => x.email === email.toLowerCase());
+    if (!u || u.isFixed) return false;
+    userStore.save(users.filter(x => x.email !== email.toLowerCase()));
+    return true;
   }
+};
+
+// Permission helpers
+const isAdmin = (u) => u && u.role === "admin";
+const canEdit = (u) => u && (isAdmin(u) || (u.permissoes && !u.permissoes.viewOnly));
+const canAccessObra = (u, obraId) => {
+  if (!u) return false;
+  if (isAdmin(u)) return true;
+  if (!u.permissoes) return false;
+  if (u.permissoes.todas) return true;
+  return (u.permissoes.obras || []).includes(obraId);
+};
+const visibleObras = (u, obras) => {
+  if (!u) return [];
+  if (isAdmin(u) || (u.permissoes && u.permissoes.todas)) return obras;
+  return obras.filter(o => (u.permissoes?.obras || []).includes(o.id));
 };
 
 const TT = [
@@ -105,8 +175,6 @@ const INAUG = [
 const CB = {1:5000,2:8000,3:3000,4:2000,5:2000,6:3000,7:12000,8:6000,9:4000,10:8000,11:500,12:1500,13:2000,14:3000,15:35000,16:40000,17:6000,18:1500,19:1000,20:500,21:15000,22:8000,23:5000,24:2000,25:500,26:1000,27:1200,28:3500,29:2000,30:1500,31:500,32:5000,33:4000,34:8000,35:3000,36:500,37:2000};
 
 const TODAY = new Date("2026-04-13");
-
-const VALID_USER = { email: "admin@pontoacafe.com", senha: "alpha2026", nome: "Administrador" };
 
 const statusColor = (s) => ({
   "Concluído": B.verde, "Concluída": B.verde, "No Prazo": B.verde,
@@ -330,6 +398,130 @@ function Tabs({ tabs, active, onChange }) {
           fontFamily: "'Montserrat',sans-serif"
         }}>{t.l}</button>
       ))}
+    </div>
+  );
+}
+
+// ─── FILE HELPERS ────────────────────────────────────────────────────────────
+const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
+
+const fileTypeGroup = (mime) => {
+  if (!mime) return "other";
+  if (mime.startsWith("image/")) return "image";
+  if (mime.startsWith("video/")) return "video";
+  if (mime === "application/pdf") return "pdf";
+  return "other";
+};
+
+const fileIcon = (mime) => ({ image: "🖼️", video: "🎥", pdf: "📄", other: "📎" }[fileTypeGroup(mime)]);
+const fBytes = (b) => b < 1024 ? b + " B" : b < 1048576 ? (b / 1024).toFixed(1) + " KB" : (b / 1048576).toFixed(1) + " MB";
+
+const readFileAsBase64 = (file) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = reject;
+  reader.readAsDataURL(file);
+});
+
+// ─── FILE VIEWER MODAL ───────────────────────────────────────────────────────
+function FileViewer({ file, onClose }) {
+  if (!file) return null;
+  const group = fileTypeGroup(file.tipo);
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,.88)", zIndex: 500,
+      display: "flex", flexDirection: "column", padding: 16
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12, color: "white" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 14, fontWeight: 700, fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{fileIcon(file.tipo)} {file.nome}</div>
+          <div style={{ fontSize: 10, color: "rgba(255,255,255,.5)", fontFamily: "'Montserrat',sans-serif", marginTop: 2 }}>{fBytes(file.tamanho)} · {file.tipo}</div>
+        </div>
+        <a href={file.data} download={file.nome} onClick={e => e.stopPropagation()} style={{ padding: "7px 12px", borderRadius: 8, background: B.dourado, color: B.cafe, fontSize: 11, fontWeight: 700, textDecoration: "none", fontFamily: "'Montserrat',sans-serif" }}>⬇ Baixar</a>
+        <button onClick={onClose} style={{ background: "rgba(255,255,255,.15)", border: "none", color: "white", width: 36, height: 36, borderRadius: 8, cursor: "pointer", fontSize: 18 }}>✕</button>
+      </div>
+      <div onClick={e => e.stopPropagation()} style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", overflow: "auto", minHeight: 0 }}>
+        {group === "image" && <img src={file.data} alt={file.nome} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain", borderRadius: 8 }} />}
+        {group === "video" && <video src={file.data} controls style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 8 }} />}
+        {group === "pdf" && <embed src={file.data} type="application/pdf" style={{ width: "100%", height: "100%", minHeight: 400, borderRadius: 8 }} />}
+        {group === "other" && (
+          <div style={{ textAlign: "center", color: "white", fontFamily: "'Montserrat',sans-serif", padding: 40 }}>
+            <div style={{ fontSize: 56, marginBottom: 12 }}>📎</div>
+            <div style={{ fontSize: 14, marginBottom: 14 }}>Pré-visualização não disponível</div>
+            <a href={file.data} download={file.nome} style={{ padding: "10px 18px", background: B.dourado, color: B.cafe, borderRadius: 8, fontSize: 12, fontWeight: 700, textDecoration: "none" }}>⬇ Baixar arquivo</a>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── FILE MANAGER (upload + list + view + delete) ────────────────────────────
+function FileManager({ arquivos = [], onChange, user, readOnly, compact }) {
+  const [viewing, setViewing] = useState(null);
+  const [error, setError] = useState("");
+
+  const handleFiles = async (files) => {
+    setError("");
+    const list = Array.from(files);
+    const newItems = [];
+    for (const f of list) {
+      if (f.size > MAX_FILE_SIZE) {
+        setError(`"${f.name}" excede o limite de 5 MB.`);
+        continue;
+      }
+      try {
+        const data = await readFileAsBase64(f);
+        newItems.push({
+          id: Date.now() + Math.random(),
+          nome: f.name, tipo: f.type, tamanho: f.size,
+          data, uploadedAt: new Date().toISOString(),
+          uploadedBy: user?.email || "desconhecido"
+        });
+      } catch { setError("Erro ao ler arquivo."); }
+    }
+    if (newItems.length) {
+      try { onChange([...arquivos, ...newItems]); }
+      catch { setError("Armazenamento cheio. Remova arquivos antigos."); }
+    }
+  };
+
+  const remove = (id) => {
+    if (!confirm("Remover este arquivo?")) return;
+    onChange(arquivos.filter(a => a.id !== id));
+  };
+
+  return (
+    <div>
+      {!readOnly && (
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: "block", cursor: "pointer", border: "2px dashed " + B.creme, borderRadius: 10, padding: compact ? "12px" : "20px", textAlign: "center", background: B.offwhite }}>
+            <div style={{ fontSize: compact ? 18 : 24, marginBottom: 4 }}>📤</div>
+            <div style={{ fontSize: compact ? 11 : 13, fontWeight: 700, color: B.caramelo, fontFamily: "'Montserrat',sans-serif" }}>Adicionar arquivo</div>
+            <div style={{ fontSize: 10, color: B.cinza, marginTop: 3, fontFamily: "'Montserrat',sans-serif" }}>PDF, imagem ou vídeo · máx 5 MB</div>
+            <input type="file" multiple accept="image/*,video/*,application/pdf" onChange={e => handleFiles(e.target.files)} style={{ display: "none" }} />
+          </label>
+          {error && <div style={{ background: "#fdecea", color: B.vermelho, padding: "8px 12px", borderRadius: 6, fontSize: 11, marginTop: 8, fontFamily: "'Montserrat',sans-serif", fontWeight: 600 }}>⚠ {error}</div>}
+        </div>
+      )}
+
+      {arquivos.length === 0
+        ? <div style={{ textAlign: "center", padding: 18, color: B.cinza, fontSize: 12, fontFamily: "'Montserrat',sans-serif" }}>Nenhum arquivo.</div>
+        : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {arquivos.map(a => (
+              <div key={a.id} style={{ background: B.branco, border: "1px solid " + B.creme, borderRadius: 8, padding: "9px 11px", display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ fontSize: 20 }}>{fileIcon(a.tipo)}</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: B.cafe, fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.nome}</div>
+                  <div style={{ fontSize: 9, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>{fBytes(a.tamanho)} · {new Date(a.uploadedAt).toLocaleDateString("pt-BR")}</div>
+                </div>
+                <button onClick={() => setViewing(a)} style={{ background: B.offwhite, border: "1px solid " + B.creme, borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: B.caramelo, fontFamily: "'Montserrat',sans-serif", minHeight: 32 }}>👁</button>
+                {!readOnly && <button onClick={() => remove(a.id)} style={{ background: "#fdecea", border: "none", borderRadius: 6, padding: "6px 10px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: B.vermelho, minHeight: 32 }}>✕</button>}
+              </div>
+            ))}
+          </div>
+      }
+      {viewing && <FileViewer file={viewing} onClose={() => setViewing(null)} />}
     </div>
   );
 }
@@ -559,14 +751,14 @@ function LoginScreen({ onLogin, onSignup, onForgot }) {
     setLoading(true);
     setErro("");
     setTimeout(() => {
-      const found = userStore.find(email, senha);
-      if (found) {
-        onLogin(found);
+      const res = userStore.authenticate(email, senha);
+      if (res.ok) {
+        onLogin(res.user);
       } else {
-        setErro("Email ou senha incorretos. Verifique os dados e tente novamente.");
+        setErro(res.erro);
         setLoading(false);
       }
-    }, 600);
+    }, 500);
   };
 
   return (
@@ -736,9 +928,11 @@ function SignupScreen({ onBack, onCadastrar }) {
         <div style={{ background: "rgba(250,246,241,.05)", border: "1px solid rgba(196,164,120,.18)", borderRadius: 18, padding: isMobile ? "24px 20px" : "32px 28px" }}>
           {success ? (
             <div style={{ textAlign: "center", padding: "16px 0" }}>
-              <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: "#f5ebe0", marginBottom: 6 }}>Cadastro realizado!</div>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12, color: "rgba(245,235,224,.4)" }}>Redirecionando para o login...</div>
+              <div style={{ fontSize: 40, marginBottom: 12 }}>⏳</div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 16, color: "#f5ebe0", marginBottom: 8 }}>Cadastro enviado!</div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12, color: "rgba(245,235,224,.5)", lineHeight: 1.6, padding: "0 8px" }}>
+                Seu acesso precisa ser aprovado por um administrador. Você será notificado quando for liberado.
+              </div>
             </div>
           ) : (
             <>
@@ -961,15 +1155,259 @@ function ForgotPasswordScreen({ onBack }) {
   );
 }
 
+// ─── PENDING APPROVAL SCREEN ─────────────────────────────────────────────────
+function PendingApprovalScreen({ user, onLogout }) {
+  const isMobile = useIsMobile();
+  return (
+    <div style={{
+      minHeight: "100vh", background: "linear-gradient(145deg, #1a0e08 0%, #2c1810 40%, #3d2214 70%, #4a3020 100%)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "24px"
+    }}>
+      <div style={{ width: "100%", maxWidth: 420, textAlign: "center" }}>
+        <div style={{
+          width: 68, height: 68, borderRadius: 18, margin: "0 auto 18px",
+          background: "rgba(212,120,58,.15)", border: "1px solid rgba(212,120,58,.3)",
+          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 30
+        }}>⏳</div>
+        <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 22, color: "#f5ebe0", margin: "0 0 10px" }}>
+          Aguardando Aprovação
+        </h2>
+        <p style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.55)", lineHeight: 1.7, margin: "0 0 28px", padding: "0 12px" }}>
+          Olá, <strong style={{ color: "#c4a478" }}>{user.nome}</strong>! Sua conta foi criada com sucesso, mas ainda precisa ser aprovada por um administrador antes de acessar o sistema.
+        </p>
+        <div style={{ background: "rgba(250,246,241,.05)", border: "1px solid rgba(196,164,120,.18)", borderRadius: 12, padding: isMobile ? "18px" : "22px", marginBottom: 24, textAlign: "left" }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 12, fontFamily: "'Montserrat',sans-serif" }}>Administradores do sistema</div>
+          {FIXED_ADMINS.filter(a => !a.email.startsWith("admin@")).map(a => (
+            <div key={a.email} style={{ fontSize: 12, color: "rgba(245,235,224,.7)", fontFamily: "'Montserrat',sans-serif", marginBottom: 6 }}>
+              👤 <strong style={{ color: "#c4a478" }}>{a.nome}</strong> · {a.email}
+            </div>
+          ))}
+          <div style={{ marginTop: 12, fontSize: 11, color: "rgba(245,235,224,.4)", fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6 }}>
+            Entre em contato por email ou WhatsApp para solicitar liberação do acesso.
+          </div>
+        </div>
+        <button onClick={onLogout} style={{
+          padding: "12px 28px", borderRadius: 10, border: "1px solid rgba(196,164,120,.3)",
+          background: "rgba(196,164,120,.08)", color: "#c4a478", cursor: "pointer",
+          fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 13
+        }}>← Voltar ao login</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── USUÁRIOS (ADMIN) ─────────────────────────────────────────────────────────
+function UsuariosView({ currentUser, obras, isMobile, refreshKey, onRefresh }) {
+  const [tab, setTab] = useState("pendentes");
+  const [users, setUsers] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [novoAdm, setNovoAdm] = useState({ nome: "", email: "", senha: "" });
+  const [admMsg, setAdmMsg] = useState("");
+
+  useEffect(() => { setUsers(userStore.getAll()); }, [refreshKey]);
+
+  const reload = () => { setUsers(userStore.getAll()); onRefresh && onRefresh(); };
+
+  const approve = (email) => {
+    userStore.update(email, {
+      status: "aprovado",
+      approvedBy: currentUser.email, approvedAt: new Date().toISOString(),
+      permissoes: { todas: true, obras: [], viewOnly: false }
+    });
+    reload();
+  };
+  const reject = (email) => { if (confirm("Rejeitar este cadastro?")) { userStore.remove(email); reload(); } };
+  const block = (email) => { userStore.update(email, { status: "bloqueado" }); reload(); };
+  const unblock = (email) => { userStore.update(email, { status: "aprovado" }); reload(); };
+  const del = (email) => { if (confirm("Excluir permanentemente?")) { userStore.remove(email); reload(); } };
+  const promoteAdmin = (email) => { userStore.update(email, { role: "admin", permissoes: { todas: true, obras: [], viewOnly: false } }); reload(); };
+  const demoteAdmin = (email) => { userStore.update(email, { role: "user" }); reload(); };
+
+  const savePermissoes = (email, permissoes) => { userStore.update(email, { permissoes }); reload(); setEditing(null); };
+
+  const createAdmin = () => {
+    setAdmMsg("");
+    if (!novoAdm.nome || !novoAdm.email || !novoAdm.senha) { setAdmMsg("⚠ Preencha todos os campos."); return; }
+    if (novoAdm.senha.length < 6) { setAdmMsg("⚠ Senha mínima de 6 caracteres."); return; }
+    const r = userStore.add(novoAdm.nome, novoAdm.email, novoAdm.senha);
+    if (!r.ok) { setAdmMsg("⚠ " + r.erro); return; }
+    userStore.update(novoAdm.email, {
+      role: "admin", status: "aprovado",
+      permissoes: { todas: true, obras: [], viewOnly: false },
+      approvedBy: currentUser.email, approvedAt: new Date().toISOString()
+    });
+    setAdmMsg("✅ Administrador criado!");
+    setNovoAdm({ nome: "", email: "", senha: "" });
+    reload();
+  };
+
+  const pendentes = users.filter(u => u.status === "pendente");
+  const aprovados = users.filter(u => u.status === "aprovado");
+  const bloqueados = users.filter(u => u.status === "bloqueado");
+
+  const TABS = [
+    { id: "pendentes", l: "⏳ Pendentes (" + pendentes.length + ")" },
+    { id: "aprovados", l: "✅ Aprovados (" + aprovados.length + ")" },
+    { id: "bloqueados", l: "🚫 Bloqueados (" + bloqueados.length + ")" },
+    { id: "novo-admin", l: "➕ Novo Admin" }
+  ];
+
+  const UserCard = ({ u }) => (
+    <div style={{ background: B.branco, borderRadius: 10, padding: "12px 14px", border: "1px solid " + B.creme, marginBottom: 8 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontWeight: 700, fontSize: 13, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>
+            {u.nome}
+            {u.role === "admin" && <span style={{ marginLeft: 6, background: B.dourado, color: B.cafe, padding: "1px 7px", borderRadius: 10, fontSize: 9, fontWeight: 700 }}>ADMIN</span>}
+            {u.isFixed && <span style={{ marginLeft: 4, background: B.cafe, color: B.creme, padding: "1px 7px", borderRadius: 10, fontSize: 9, fontWeight: 700 }}>FIXO</span>}
+          </div>
+          <div style={{ fontSize: 11, color: B.cinza, fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis" }}>{u.email}</div>
+          {u.role !== "admin" && u.status === "aprovado" && u.permissoes && (
+            <div style={{ fontSize: 10, color: B.caramelo, fontFamily: "'Montserrat',sans-serif", marginTop: 3 }}>
+              {u.permissoes.todas ? "🔓 Acesso total" : `🔒 ${u.permissoes.obras?.length || 0} obra(s)`}
+              {u.permissoes.viewOnly && " · 👁 Somente visualizar"}
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+          {u.status === "pendente" && (
+            <>
+              <button onClick={() => approve(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: B.verde, color: "white", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>✓ Aprovar</button>
+              <button onClick={() => reject(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: "#fdecea", color: B.vermelho, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>✕ Rejeitar</button>
+            </>
+          )}
+          {u.status === "aprovado" && !u.isFixed && (
+            <>
+              {u.role !== "admin"
+                ? <button onClick={() => setEditing(u)} style={{ padding: "6px 10px", borderRadius: 6, background: B.offwhite, color: B.caramelo, border: "1px solid " + B.creme, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>✏️ Permissões</button>
+                : null}
+              {u.role === "user"
+                ? <button onClick={() => promoteAdmin(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: B.dourado, color: B.cafe, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>⬆ Admin</button>
+                : <button onClick={() => demoteAdmin(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: B.offwhite, color: B.caramelo, border: "1px solid " + B.creme, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>⬇ User</button>}
+              <button onClick={() => block(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: "#fff0e0", color: B.laranja, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>🚫 Bloquear</button>
+            </>
+          )}
+          {u.status === "bloqueado" && !u.isFixed && (
+            <>
+              <button onClick={() => unblock(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: B.verde, color: "white", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>✓ Desbloquear</button>
+              <button onClick={() => del(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: B.vermelho, color: "white", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>🗑 Excluir</button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div>
+      <h2 style={{ fontFamily: "'Montserrat',sans-serif", color: B.cafe, margin: "0 0 14px", fontSize: 18, fontWeight: 800 }}>🔐 Usuários e Permissões</h2>
+      <Tabs tabs={TABS} active={tab} onChange={setTab} />
+      <div style={{ height: 14 }} />
+
+      {tab === "pendentes" && (pendentes.length === 0
+        ? <div style={{ textAlign: "center", padding: 30, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}><div style={{ fontSize: 28, marginBottom: 6 }}>✅</div>Nenhuma solicitação pendente</div>
+        : pendentes.map(u => <UserCard key={u.email} u={u} />))}
+      {tab === "aprovados" && aprovados.map(u => <UserCard key={u.email} u={u} />)}
+      {tab === "bloqueados" && (bloqueados.length === 0
+        ? <div style={{ textAlign: "center", padding: 30, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>Nenhum usuário bloqueado</div>
+        : bloqueados.map(u => <UserCard key={u.email} u={u} />))}
+
+      {tab === "novo-admin" && (
+        <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: B.cafe, marginBottom: 10, fontFamily: "'Montserrat',sans-serif" }}>Criar novo administrador</div>
+          <div style={{ fontSize: 11, color: B.cinza, marginBottom: 14, fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6 }}>Administradores têm acesso total a todas as obras e podem gerenciar usuários.</div>
+          <Inp label="Nome" value={novoAdm.nome} onChange={v => setNovoAdm({ ...novoAdm, nome: v })} />
+          <Inp label="Email" value={novoAdm.email} onChange={v => setNovoAdm({ ...novoAdm, email: v })} type="email" />
+          <Inp label="Senha inicial" value={novoAdm.senha} onChange={v => setNovoAdm({ ...novoAdm, senha: v })} type="password" placeholder="Mínimo 6 caracteres" />
+          {admMsg && <div style={{ padding: "9px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: admMsg.startsWith("✅") ? "#e8f5e1" : "#fdecea", color: admMsg.startsWith("✅") ? B.verde : B.vermelho, marginBottom: 10, fontFamily: "'Montserrat',sans-serif" }}>{admMsg}</div>}
+          <Btn full color={B.dourado} onClick={createAdmin}>👑 Criar Administrador</Btn>
+        </div>
+      )}
+
+      {editing && <PermissoesModal user={editing} obras={obras} onSave={(perms) => savePermissoes(editing.email, perms)} onClose={() => setEditing(null)} isMobile={isMobile} />}
+    </div>
+  );
+}
+
+function PermissoesModal({ user, obras, onSave, onClose, isMobile }) {
+  const [modo, setModo] = useState(user.permissoes?.todas ? "todas" : "especificas");
+  const [obraIds, setObraIds] = useState(user.permissoes?.obras || []);
+  const [viewOnly, setViewOnly] = useState(user.permissoes?.viewOnly || false);
+
+  const toggleObra = (id) => setObraIds(obraIds.includes(id) ? obraIds.filter(x => x !== id) : [...obraIds, id]);
+
+  const handleSave = () => onSave({
+    todas: modo === "todas",
+    obras: modo === "especificas" ? obraIds : [],
+    viewOnly
+  });
+
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: B.branco, borderRadius: 14, padding: 20, maxWidth: 440, width: "100%", maxHeight: "90vh", overflow: "auto" }}>
+        <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 15, fontWeight: 800, color: B.cafe, marginBottom: 4 }}>Editar Permissões</div>
+        <div style={{ fontSize: 11, color: B.cinza, marginBottom: 16, fontFamily: "'Montserrat',sans-serif" }}>{user.nome} · {user.email}</div>
+
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", marginBottom: 8, fontFamily: "'Montserrat',sans-serif" }}>Escopo de acesso</div>
+          <div style={{ display: "flex", gap: 7 }}>
+            {[["todas", "🔓 Todas as obras"], ["especificas", "🔒 Obras específicas"]].map(([v, l]) => (
+              <button key={v} onClick={() => setModo(v)} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "2px solid " + (modo === v ? B.cafe : B.creme), background: modo === v ? B.cafe : "white", color: modo === v ? B.creme : B.caramelo, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>{l}</button>
+            ))}
+          </div>
+        </div>
+
+        {modo === "especificas" && (
+          <div style={{ marginBottom: 14, maxHeight: 200, overflowY: "auto", border: "1px solid " + B.creme, borderRadius: 8, padding: 6 }}>
+            {obras.map(o => (
+              <label key={o.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 6, cursor: "pointer", background: obraIds.includes(o.id) ? B.offwhite : "transparent" }}>
+                <input type="checkbox" checked={obraIds.includes(o.id)} onChange={() => toggleObra(o.id)} />
+                <span style={{ fontSize: 12, color: B.cafe, fontFamily: "'Montserrat',sans-serif", flex: 1 }}>{o.nome}</span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 8, background: viewOnly ? "#fff8ee" : B.offwhite, cursor: "pointer", marginBottom: 16, border: "1px solid " + (viewOnly ? B.latte : B.creme) }}>
+          <input type="checkbox" checked={viewOnly} onChange={e => setViewOnly(e.target.checked)} />
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 700, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>👁 Somente visualização</div>
+            <div style={{ fontSize: 10, color: B.cinza, fontFamily: "'Montserrat',sans-serif", marginTop: 1 }}>Usuário pode ver mas não editar nada</div>
+          </div>
+        </label>
+
+        <div style={{ display: "flex", gap: 8 }}>
+          <Btn outline color={B.cinza} onClick={onClose}>Cancelar</Btn>
+          <Btn full color={B.verde} onClick={handleSave}>💾 Salvar</Btn>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── ACCESS DENIED ────────────────────────────────────────────────────────────
+function AccessDenied() {
+  return (
+    <div style={{ textAlign: "center", padding: "60px 20px", color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>
+      <div style={{ fontSize: 48, marginBottom: 12 }}>🔒</div>
+      <div style={{ fontSize: 16, fontWeight: 700, color: B.cafe, marginBottom: 6 }}>Acesso restrito</div>
+      <div style={{ fontSize: 12 }}>Você não tem permissão para acessar esta área.</div>
+    </div>
+  );
+}
+
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
 function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onLogout }) {
+  const admin = isAdmin(user);
+  const canEditFull = admin || (user?.permissoes?.todas && !user?.permissoes?.viewOnly);
   const NAV = [
     { id: "home", l: "Dashboard", i: "🏠" },
-    { id: "nova", l: "Nova Obra", i: "➕" },
+    ...(canEditFull ? [{ id: "nova", l: "Nova Obra", i: "➕" }] : []),
     { id: "equipe", l: "Equipe", i: "👥" },
     { id: "relatorios", l: "Relatórios", i: "📄" },
     { id: "whatsapp", l: "WhatsApp", i: "💬" },
-    { id: "config", l: "Configurações", i: "⚙️" }
+    ...(admin ? [{ id: "usuarios", l: "Usuários", i: "🔐" }] : []),
+    ...(admin ? [{ id: "config", l: "Configurações", i: "⚙️" }] : [])
   ];
   const go = (id) => { setView(id); if (isMobile) onClose(); };
 
@@ -1009,8 +1447,9 @@ function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onL
       <div style={{ padding: "12px 14px", borderTop: "1px solid rgba(196,164,120,.2)" }}>
         {user && (
           <div style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, background: "rgba(196,164,120,.1)" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: B.dourado, fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: B.dourado, fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
               👤 {user.nome}
+              {admin && <span style={{ background: B.dourado, color: B.cafe, padding: "1px 5px", borderRadius: 8, fontSize: 8, fontWeight: 800 }}>ADM</span>}
             </div>
             <div style={{ fontSize: 9, color: "rgba(245,235,224,.35)", fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}>
               {user.email}
@@ -1048,7 +1487,7 @@ function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onL
 
 // ─── TOP BAR ─────────────────────────────────────────────────────────────────
 function TopBar({ isMobile, onMenu, alertCount, view, selObra, user, onLogout }) {
-  const titles = { home: "Dashboard", nova: "Nova Obra", equipe: "Equipe", relatorios: "Relatórios", whatsapp: "WhatsApp", config: "Configurações", "obra-detail": selObra ? selObra.nome.split("—")[1]?.trim() || selObra.nome : "Implantação" };
+  const titles = { home: "Dashboard", nova: "Nova Obra", equipe: "Equipe", relatorios: "Relatórios", whatsapp: "WhatsApp", usuarios: "Usuários", config: "Configurações", "obra-detail": selObra ? selObra.nome.split("—")[1]?.trim() || selObra.nome : "Implantação" };
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 12, padding: isMobile ? "13px 16px 11px" : "0 0 18px", borderBottom: isMobile ? "1px solid " + B.creme : "none", marginBottom: isMobile ? 16 : 0, background: isMobile ? B.branco : "transparent", position: isMobile ? "sticky" : "static", top: 0, zIndex: 10 }}>
       {isMobile && (
@@ -1191,7 +1630,7 @@ function HomeView({ obras, onSelect, logs, isMobile }) {
 }
 
 // ─── OBRA DETAIL ─────────────────────────────────────────────────────────────
-function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile }) {
+function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile, user }) {
   const [tab, setTab] = useState("overview");
   const [aiOut, setAiOut] = useState({});
   const [aiLoad, setAiLoad] = useState({});
@@ -1201,8 +1640,9 @@ function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile }) {
   const [filterS, setFilterS] = useState("Todos");
   const [baseline, setBaseline] = useState(false);
   const svgRef = useRef(null);
+  const readOnly = !canEdit(user);
 
-  const TABS = [{ id: "overview", l: "📊 Dashboard" }, { id: "tarefas", l: "☑️ Tarefas" }, { id: "gantt", l: "📅 Gantt" }, { id: "inaug", l: "🎯 Inauguração" }, { id: "franqueado", l: "👤 Contatos" }, { id: "custos", l: "💰 Custos" }, { id: "ai", l: "🧠 IA" }];
+  const TABS = [{ id: "overview", l: "📊 Dashboard" }, { id: "tarefas", l: "☑️ Tarefas" }, { id: "gantt", l: "📅 Gantt" }, { id: "arquivos", l: "📁 Arquivos" }, { id: "inaug", l: "🎯 Inauguração" }, { id: "franqueado", l: "👤 Contatos" }, { id: "custos", l: "💰 Custos" }, { id: "ai", l: "🧠 IA" }];
 
   const runAI = async (k, prompt) => {
     setAiLoad(p => ({ ...p, [k]: true }));
@@ -1247,6 +1687,11 @@ function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile }) {
       </div>
       <Tabs tabs={TABS} active={tab} onChange={setTab} />
       <div style={{ height: 14 }} />
+      {readOnly && (
+        <div style={{ background: "#fff8ee", border: "1px solid " + B.latte, borderRadius: 8, padding: "8px 12px", fontSize: 11, color: B.caramelo, fontFamily: "'Montserrat',sans-serif", fontWeight: 600, marginBottom: 12 }}>
+          👁 Modo somente visualização — você não pode editar esta implantação
+        </div>
+      )}
 
       {tab === "overview" && (
         <div>
@@ -1312,7 +1757,9 @@ function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile }) {
                         </div>
                         <div style={{ display: "flex", gap: 7, alignItems: "center", flexShrink: 0 }}>
                           <div style={{ fontSize: 12, fontWeight: 700, color: statusColor(tk.status), fontFamily: "'Montserrat',sans-serif" }}>{tk.progresso}%</div>
-                          <button onClick={() => { if (editing) { setEditId(null); } else { setEditId(tk.id); setEditData({ status: tk.status, progresso: tk.progresso, comentario: tk.comentario || "", responsavel: tk.responsavel || "" }); } }} style={{ background: editing ? B.caramelo : B.offwhite, border: "1px solid " + B.creme, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, color: editing ? "white" : B.caramelo, fontWeight: 700, minHeight: 32, fontFamily: "'Montserrat',sans-serif" }}>✏️</button>
+                          {(tk.arquivos?.length > 0) && <span style={{ fontSize: 10, color: B.caramelo, fontFamily: "'Montserrat',sans-serif" }}>📎{tk.arquivos.length}</span>}
+                          {!readOnly && <button onClick={() => { if (editing) { setEditId(null); } else { setEditId(tk.id); setEditData({ status: tk.status, progresso: tk.progresso, comentario: tk.comentario || "", responsavel: tk.responsavel || "" }); } }} style={{ background: editing ? B.caramelo : B.offwhite, border: "1px solid " + B.creme, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, color: editing ? "white" : B.caramelo, fontWeight: 700, minHeight: 32, fontFamily: "'Montserrat',sans-serif" }}>✏️</button>}
+                          {readOnly && (tk.arquivos?.length > 0) && <button onClick={() => setEditId(editing ? null : tk.id)} style={{ background: editing ? B.caramelo : B.offwhite, border: "1px solid " + B.creme, borderRadius: 6, padding: "5px 9px", cursor: "pointer", fontSize: 11, color: editing ? "white" : B.caramelo, fontWeight: 700, minHeight: 32, fontFamily: "'Montserrat',sans-serif" }}>📁</button>}
                         </div>
                       </div>
                       <div style={{ marginTop: 5, display: "flex", gap: 7, alignItems: "center" }}>
@@ -1323,25 +1770,39 @@ function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile }) {
                   </div>
                   {editing && (
                     <div style={{ padding: "14px 13px", background: "#fffdf5", borderTop: "1px solid " + B.dourado + "33" }}>
-                      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 10 }}>
-                        <div>
-                          <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>Status</label>
-                          <select value={editData.status} onChange={e => setEditData({ ...editData, status: e.target.value })} style={{ width: "100%", padding: "9px", borderRadius: 7, border: "1px solid " + B.creme, fontSize: 12, background: B.offwhite, minHeight: 42, fontFamily: "'Montserrat',sans-serif" }}>
-                            {["Não Iniciado", "Em Andamento", "Concluído", "Atrasado"].map(s => <option key={s} value={s}>{s}</option>)}
-                          </select>
-                        </div>
-                        <div>
-                          <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>Progresso: {editData.progresso}%</label>
-                          <input type="range" min={0} max={100} step={5} value={editData.progresso} onChange={e => setEditData({ ...editData, progresso: Number(e.target.value) })} style={{ width: "100%", marginTop: 10 }} />
-                        </div>
-                      </div>
-                      <div style={{ marginBottom: 10 }}>
-                        <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>💬 Comentário</label>
-                        <textarea value={editData.comentario} onChange={e => setEditData({ ...editData, comentario: e.target.value })} placeholder="Observação ou atualização..." rows={2} style={{ width: "100%", padding: "9px", borderRadius: 7, border: "1px solid " + B.creme, fontSize: 12, fontFamily: "'Montserrat',sans-serif", resize: "vertical", boxSizing: "border-box" }} />
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <Btn onClick={() => { saveTask(tk.id, editData); setEditId(null); }} color={B.verde}>💾 Salvar</Btn>
-                        <Btn outline color={B.cinza} onClick={() => setEditId(null)}>Cancelar</Btn>
+                      {!readOnly && (
+                        <>
+                          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 10, marginBottom: 10 }}>
+                            <div>
+                              <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>Status</label>
+                              <select value={editData.status} onChange={e => setEditData({ ...editData, status: e.target.value })} style={{ width: "100%", padding: "9px", borderRadius: 7, border: "1px solid " + B.creme, fontSize: 12, background: B.offwhite, minHeight: 42, fontFamily: "'Montserrat',sans-serif" }}>
+                                {["Não Iniciado", "Em Andamento", "Concluído", "Atrasado"].map(s => <option key={s} value={s}>{s}</option>)}
+                              </select>
+                            </div>
+                            <div>
+                              <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>Progresso: {editData.progresso}%</label>
+                              <input type="range" min={0} max={100} step={5} value={editData.progresso} onChange={e => setEditData({ ...editData, progresso: Number(e.target.value) })} style={{ width: "100%", marginTop: 10 }} />
+                            </div>
+                          </div>
+                          <div style={{ marginBottom: 10 }}>
+                            <label style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, display: "block", marginBottom: 4, textTransform: "uppercase", fontFamily: "'Montserrat',sans-serif" }}>💬 Comentário</label>
+                            <textarea value={editData.comentario} onChange={e => setEditData({ ...editData, comentario: e.target.value })} placeholder="Observação ou atualização..." rows={2} style={{ width: "100%", padding: "9px", borderRadius: 7, border: "1px solid " + B.creme, fontSize: 12, fontFamily: "'Montserrat',sans-serif", resize: "vertical", boxSizing: "border-box" }} />
+                          </div>
+                          <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                            <Btn onClick={() => { saveTask(tk.id, editData); setEditId(null); }} color={B.verde}>💾 Salvar</Btn>
+                            <Btn outline color={B.cinza} onClick={() => setEditId(null)}>Cancelar</Btn>
+                          </div>
+                        </>
+                      )}
+                      <div style={{ borderTop: readOnly ? "none" : "1px solid " + B.creme, paddingTop: readOnly ? 0 : 12 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", marginBottom: 6, fontFamily: "'Montserrat',sans-serif" }}>📎 Arquivos da Tarefa</div>
+                        <FileManager
+                          arquivos={tk.arquivos || []}
+                          onChange={(arquivos) => saveTask(tk.id, { arquivos })}
+                          user={user}
+                          readOnly={readOnly}
+                          compact
+                        />
                       </div>
                     </div>
                   )}
@@ -1372,6 +1833,24 @@ function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile }) {
         </div>
       )}
 
+      {tab === "arquivos" && (
+        <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14, flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 15, color: B.cafe, fontWeight: 700 }}>📁 Arquivos da Obra</div>
+              <div style={{ fontSize: 11, color: B.cinza, fontFamily: "'Montserrat',sans-serif", marginTop: 2 }}>PDFs, imagens e vídeos com visualização online</div>
+            </div>
+            <div style={{ fontSize: 11, fontWeight: 700, color: B.caramelo, fontFamily: "'Montserrat',sans-serif" }}>{(obra.arquivos || []).length} arquivo(s)</div>
+          </div>
+          <FileManager
+            arquivos={obra.arquivos || []}
+            onChange={(arquivos) => onUpdate({ ...obra, arquivos })}
+            user={user}
+            readOnly={readOnly}
+          />
+        </div>
+      )}
+
       {tab === "inaug" && (
         <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
           <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
@@ -1381,7 +1860,7 @@ function ObraDetail({ obra, onBack, onUpdate, addLog, isMobile }) {
           <Bar pct={obra.inauguracao.filter(i => i.done).length / obra.inauguracao.length * 100} color={B.latte} h={6} />
           <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 8 }}>
             {obra.inauguracao.map(item => (
-              <div key={item.id} onClick={() => onUpdate({ ...obra, inauguracao: obra.inauguracao.map(i => i.id === item.id ? { ...i, done: !i.done } : i) })} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 8, border: "1px solid " + (item.done ? B.verde + "44" : B.creme), background: item.done ? "#e8f5e1" : B.offwhite, cursor: "pointer", minHeight: 46 }}>
+              <div key={item.id} onClick={() => { if (readOnly) return; onUpdate({ ...obra, inauguracao: obra.inauguracao.map(i => i.id === item.id ? { ...i, done: !i.done } : i) }); }} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 14px", borderRadius: 8, border: "1px solid " + (item.done ? B.verde + "44" : B.creme), background: item.done ? "#e8f5e1" : B.offwhite, cursor: readOnly ? "default" : "pointer", minHeight: 46, opacity: readOnly && !item.done ? 0.8 : 1 }}>
                 <div style={{ width: 22, height: 22, borderRadius: "50%", border: "2px solid " + (item.done ? B.verde : B.creme), background: item.done ? B.verde : "white", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                   {item.done && <span style={{ color: "white", fontSize: 12, fontWeight: 700 }}>✓</span>}
                 </div>
@@ -1816,6 +2295,9 @@ export default function App() {
   const [view, setView] = useState("home");
   const [selObra, setSelObra] = useState(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [userRefresh, setUserRefresh] = useState(0);
+
+  useEffect(() => { userStore.init(); }, []);
 
   useEffect(() => {
     (async () => {
@@ -1844,11 +2326,15 @@ export default function App() {
     setSelObra(r);
   }, []);
 
-  const handleSelect = useCallback((obra) => { setSelObra(obra); setView("obra-detail"); }, []);
+  const handleSelect = useCallback((obra) => {
+    if (!canAccessObra(user, obra.id)) return;
+    setSelObra(obra); setView("obra-detail");
+  }, [user]);
   const handleCriar = useCallback((nova) => { setObras(prev => [...prev, nova]); }, []);
   const handleLogout = () => { setUser(null); setView("home"); setSidebarOpen(false); setScreen("landing"); };
 
-  const alertCount = obras.reduce((a, o) => a + o.tarefas.filter(t => t.status === "Atrasado" || (daysLeft(t, o.elap) <= 3 && t.status !== "Concluído")).length, 0);
+  const obrasVisiveis = useMemo(() => visibleObras(user, obras), [user, obras]);
+  const alertCount = obrasVisiveis.reduce((a, o) => a + o.tarefas.filter(t => t.status === "Atrasado" || (daysLeft(t, o.elap) <= 3 && t.status !== "Concluído")).length, 0);
 
   // ── Screens ────────────────────────────────────────────────────────────────
   if (screen === "landing") return (
@@ -1861,7 +2347,14 @@ export default function App() {
   if (screen === "login") return (
     <>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
-      <LoginScreen onLogin={(u) => { setUser(u); setScreen("app"); }} onSignup={() => setScreen("signup")} onForgot={() => setScreen("forgot")} />
+      <LoginScreen onLogin={(u) => { setUser(u); setScreen(u.status === "pendente" ? "pending" : "app"); }} onSignup={() => setScreen("signup")} onForgot={() => setScreen("forgot")} />
+    </>
+  );
+
+  if (screen === "pending") return (
+    <>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
+      <PendingApprovalScreen user={user} onLogout={handleLogout} />
     </>
   );
 
@@ -1898,13 +2391,20 @@ export default function App() {
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
           <TopBar isMobile={isMobile} onMenu={() => setSidebarOpen(true)} alertCount={alertCount} view={view} selObra={selObra} user={user} onLogout={handleLogout} />
           <div style={{ flex: 1, padding: isMobile ? "0 16px 24px" : "0 26px 24px", overflowX: "hidden" }}>
-            {view === "home" && <HomeView obras={obras} onSelect={handleSelect} logs={logs} isMobile={isMobile} />}
-            {view === "obra-detail" && selObra && <ObraDetail obra={selObra} onBack={() => setView("home")} onUpdate={handleUpdate} addLog={addLog} isMobile={isMobile} />}
-            {view === "nova" && <NovaObra onBack={() => setView("home")} templates={templates} onCriar={handleCriar} isMobile={isMobile} />}
-            {view === "equipe" && <EquipeView obras={obras} logs={logs} />}
-            {view === "relatorios" && <RelatoriosView obras={obras} />}
-            {view === "whatsapp" && <WhatsAppView obras={obras} contatos={contatos} setContatos={setContatos} agend={agend} setAgend={setAgend} />}
-            {view === "config" && <ConfigView obras={obras} templates={templates} setTemplates={setTemplates} />}
+            {view === "home" && <HomeView obras={obrasVisiveis} onSelect={handleSelect} logs={logs} isMobile={isMobile} />}
+            {view === "obra-detail" && selObra && canAccessObra(user, selObra.id) && <ObraDetail obra={selObra} onBack={() => setView("home")} onUpdate={handleUpdate} addLog={addLog} isMobile={isMobile} user={user} />}
+            {view === "nova" && (canEdit(user) && (isAdmin(user) || user?.permissoes?.todas)
+              ? <NovaObra onBack={() => setView("home")} templates={templates} onCriar={handleCriar} isMobile={isMobile} />
+              : <AccessDenied />)}
+            {view === "equipe" && <EquipeView obras={obrasVisiveis} logs={logs} />}
+            {view === "relatorios" && <RelatoriosView obras={obrasVisiveis} />}
+            {view === "whatsapp" && <WhatsAppView obras={obrasVisiveis} contatos={contatos} setContatos={setContatos} agend={agend} setAgend={setAgend} />}
+            {view === "usuarios" && (isAdmin(user)
+              ? <UsuariosView currentUser={user} obras={obras} isMobile={isMobile} refreshKey={userRefresh} onRefresh={() => setUserRefresh(x => x + 1)} />
+              : <AccessDenied />)}
+            {view === "config" && (isAdmin(user)
+              ? <ConfigView obras={obras} templates={templates} setTemplates={setTemplates} />
+              : <AccessDenied />)}
           </div>
         </div>
       </div>
