@@ -31,15 +31,15 @@ const store = {
 // ─── USERS & PERMISSIONS ──────────────────────────────────────────────────────
 // Admins fixos do sistema: sempre existem, não podem ser removidos
 const FIXED_ADMINS = [
-  { email: "lucas@pontoacafe.com.br", nome: "Lucas", senha: "alpha2026" },
-  { email: "israel.daywis@gmail.com", nome: "Israel", senha: "alpha2026" },
-  { email: "admin@pontoacafe.com",    nome: "Admin Demo", senha: "alpha2026" }
+  { email: "lucas@pontoacafe.com.br", nome: "Lucas", senha: "171195" },
+  { email: "israel.daywis@gmail.com", nome: "Israel", senha: "ID1234567@si" }
 ];
 
 // Estrutura de usuário:
 // { nome, email, senha, role: "admin" | "user",
 //   status: "pendente" | "aprovado" | "bloqueado",
 //   permissoes: { todas: bool, obras: [obraIds], viewOnly: bool },
+//   mustChangePassword: bool,
 //   approvedBy, approvedAt, createdAt, isFixed: bool }
 
 const userStore = {
@@ -52,6 +52,13 @@ const userStore = {
   init() {
     const users = userStore.getAll();
     let changed = false;
+    // Remove admin demo antigo que não está mais na lista fixa
+    const fixedEmails = FIXED_ADMINS.map(a => a.email.toLowerCase());
+    for (let i = users.length - 1; i >= 0; i--) {
+      if (users[i].isFixed && !fixedEmails.includes(users[i].email)) {
+        users.splice(i, 1); changed = true;
+      }
+    }
     FIXED_ADMINS.forEach(a => {
       const existing = users.find(u => u.email === a.email.toLowerCase());
       if (!existing) {
@@ -59,25 +66,32 @@ const userStore = {
           nome: a.nome, email: a.email.toLowerCase(), senha: a.senha,
           role: "admin", status: "aprovado",
           permissoes: { todas: true, obras: [], viewOnly: false },
+          mustChangePassword: false,
           createdAt: new Date().toISOString(), isFixed: true
         });
         changed = true;
-      } else if (!existing.isFixed) {
-        existing.isFixed = true; existing.role = "admin"; existing.status = "aprovado";
-        existing.permissoes = { todas: true, obras: [], viewOnly: false };
-        changed = true;
+      } else {
+        if (!existing.isFixed || existing.role !== "admin" || existing.status !== "aprovado") {
+          existing.isFixed = true; existing.role = "admin"; existing.status = "aprovado";
+          existing.permissoes = { todas: true, obras: [], viewOnly: false };
+          changed = true;
+        }
+        // Atualiza senha se ainda for a antiga padrão
+        if (existing.senha === "alpha2026") { existing.senha = a.senha; changed = true; }
       }
     });
     if (changed) userStore.save(users);
   },
-  add(nome, email, senha) {
+  add(nome, email, senha, opts = {}) {
     const users = userStore.getAll();
     const emailNorm = email.trim().toLowerCase();
     if (users.find(u => u.email === emailNorm)) return { ok: false, erro: "Este email já está cadastrado." };
     users.push({
       nome: nome.trim(), email: emailNorm, senha: senha.trim(),
-      role: "user", status: "pendente",
-      permissoes: { todas: false, obras: [], viewOnly: true },
+      role: opts.role || "user",
+      status: opts.status || "pendente",
+      permissoes: opts.permissoes || { todas: false, obras: [], viewOnly: true },
+      mustChangePassword: opts.mustChangePassword || false,
       createdAt: new Date().toISOString(), isFixed: false
     });
     userStore.save(users);
@@ -106,14 +120,69 @@ const userStore = {
     if (!u || u.isFixed) return false;
     userStore.save(users.filter(x => x.email !== email.toLowerCase()));
     return true;
+  },
+  countActiveAdmins() {
+    return userStore.getAll().filter(u => u.role === "admin" && u.status === "aprovado").length;
+  },
+  generateTempPassword() {
+    const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+    let p = "";
+    for (let i = 0; i < 8; i++) p += chars[Math.floor(Math.random() * chars.length)];
+    return p;
+  }
+};
+
+// Solicitações de recuperação de senha
+const recoveryStore = {
+  getAll() {
+    try { const v = localStorage.getItem("ai-recovery-v1"); return v ? JSON.parse(v) : []; } catch { return []; }
+  },
+  save(list) {
+    try { localStorage.setItem("ai-recovery-v1", JSON.stringify(list)); } catch {}
+  },
+  add(email) {
+    const list = recoveryStore.getAll();
+    const filtered = list.filter(r => r.email !== email.toLowerCase());
+    filtered.push({ id: Date.now(), email: email.toLowerCase(), requestedAt: new Date().toISOString(), status: "pendente" });
+    recoveryStore.save(filtered);
+    return true;
+  },
+  resolve(id, resolvedBy) {
+    const list = recoveryStore.getAll();
+    const r = list.find(x => x.id === id);
+    if (r) { r.status = "resolvido"; r.resolvedBy = resolvedBy; r.resolvedAt = new Date().toISOString(); }
+    recoveryStore.save(list);
+  },
+  remove(id) {
+    recoveryStore.save(recoveryStore.getAll().filter(r => r.id !== id));
+  },
+  countPending() {
+    return recoveryStore.getAll().filter(r => r.status === "pendente").length;
+  }
+};
+
+// Log de ações administrativas
+const adminLogStore = {
+  getAll() {
+    try { const v = localStorage.getItem("ai-adminlog-v1"); return v ? JSON.parse(v) : []; } catch { return []; }
+  },
+  save(list) {
+    try { localStorage.setItem("ai-adminlog-v1", JSON.stringify(list)); } catch {}
+  },
+  add(actorEmail, action, targetEmail, detail = "") {
+    const list = adminLogStore.getAll();
+    list.push({ id: Date.now() + Math.random(), ts: new Date().toISOString(), actor: actorEmail, action, target: targetEmail, detail });
+    if (list.length > 500) list.splice(0, list.length - 500);
+    adminLogStore.save(list);
   }
 };
 
 // Permission helpers
 const isAdmin = (u) => u && u.role === "admin";
-const canEdit = (u) => u && (isAdmin(u) || (u.permissoes && !u.permissoes.viewOnly));
+const canEdit = (u) => u && !u.isVisitor && (isAdmin(u) || (u.permissoes && !u.permissoes.viewOnly));
 const canAccessObra = (u, obraId) => {
   if (!u) return false;
+  if (u.isVisitor) return true;
   if (isAdmin(u)) return true;
   if (!u.permissoes) return false;
   if (u.permissoes.todas) return true;
@@ -121,8 +190,40 @@ const canAccessObra = (u, obraId) => {
 };
 const visibleObras = (u, obras) => {
   if (!u) return [];
+  if (u.isVisitor) return obras;
   if (isAdmin(u) || (u.permissoes && u.permissoes.todas)) return obras;
   return obras.filter(o => (u.permissoes?.obras || []).includes(o.id));
+};
+
+// Sanitiza dados sensíveis para o modo visitante (sem nomes, CPFs, telefones, custos, arquivos)
+const sanitizeForVisitor = (obras) => obras.map(o => ({
+  ...o,
+  resp: "—",
+  franqueado: { nome: "—", cpf: "—", telefone: "", email: "" },
+  contato2: { nome: "—", cargo: "—", telefone: "", email: "" },
+  contato3: { nome: "—", cargo: "—", telefone: "", email: "" },
+  tarefas: o.tarefas.map(t => ({ ...t, responsavel: "—", comentario: "", custo_previsto: 0, custo_realizado: 0, arquivos: [] })),
+  arquivos: [],
+  cp: 0, cr: 0
+}));
+
+// Sessão "lembrar acesso"
+const sessionStore = {
+  save(email, senha) {
+    try { localStorage.setItem("ai-session-v1", JSON.stringify({ email, senha, savedAt: Date.now() })); } catch {}
+  },
+  load() {
+    try {
+      const v = localStorage.getItem("ai-session-v1");
+      if (!v) return null;
+      const s = JSON.parse(v);
+      if (Date.now() - s.savedAt > 30 * 86400000) { localStorage.removeItem("ai-session-v1"); return null; }
+      return s;
+    } catch { return null; }
+  },
+  clear() {
+    try { localStorage.removeItem("ai-session-v1"); } catch {}
+  }
 };
 
 const TT = [
@@ -402,6 +503,39 @@ function Tabs({ tabs, active, onChange }) {
   );
 }
 
+// ─── PASSWORD INPUT (com toggle de visualização) ──────────────────────────────
+function PasswordInput({ value, onChange, placeholder, onEnter, dark }) {
+  const [show, setShow] = useState(false);
+  const bg = dark ? "rgba(250,246,241,.06)" : B.offwhite;
+  const border = dark ? "1px solid rgba(196,164,120,.22)" : "1px solid " + B.creme;
+  const color = dark ? "#f5ebe0" : B.cafe;
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        type={show ? "text" : "password"}
+        value={value}
+        onChange={e => onChange(e.target.value)}
+        onKeyDown={e => onEnter && e.key === "Enter" && onEnter()}
+        placeholder={placeholder}
+        style={{ width: "100%", padding: "12px 44px 12px 14px", borderRadius: 10, border, background: bg, fontSize: 13, color, fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
+      />
+      <button
+        type="button"
+        onClick={() => setShow(!show)}
+        title={show ? "Ocultar senha" : "Mostrar senha"}
+        style={{
+          position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)",
+          background: "transparent", border: "none", cursor: "pointer",
+          padding: "8px 10px", fontSize: 16, color: dark ? "rgba(196,164,120,.7)" : B.caramelo,
+          lineHeight: 1
+        }}
+      >
+        {show ? "🙈" : "👁"}
+      </button>
+    </div>
+  );
+}
+
 // ─── FILE HELPERS ────────────────────────────────────────────────────────────
 const MAX_FILE_SIZE = 5 * 1024 * 1024; // 5 MB
 
@@ -641,7 +775,7 @@ function Gantt({ tarefas, elap, baseline, filterP, filterS, svgRef }) {
 }
 
 // ─── LANDING PAGE ─────────────────────────────────────────────────────────────
-function LandingScreen({ onAccess }) {
+function LandingScreen({ onAccess, onVisitor }) {
   const isMobile = useIsMobile();
   return (
     <div style={{
@@ -729,9 +863,27 @@ function LandingScreen({ onAccess }) {
           </svg>
         </button>
 
+        {/* Visitor Button */}
+        <button
+          onClick={onVisitor}
+          style={{
+            width: "100%", maxWidth: 320, padding: "13px 32px", marginTop: 12,
+            background: "transparent", border: "1px solid rgba(196,164,120,.3)",
+            borderRadius: 12, cursor: "pointer",
+            fontFamily: "'Montserrat',sans-serif", fontWeight: 700,
+            fontSize: 13, color: "rgba(196,164,120,.9)", letterSpacing: "0.3px",
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+            margin: "12px auto 0", transition: "background .2s"
+          }}
+          onMouseOver={e => e.currentTarget.style.background = "rgba(196,164,120,.08)"}
+          onMouseOut={e => e.currentTarget.style.background = "transparent"}
+        >
+          👁 Visualizar como visitante
+        </button>
+
         {/* Footer */}
-        <div style={{ marginTop: 48, fontSize: 10, color: "rgba(245,235,224,.2)", fontFamily: "'Montserrat',sans-serif", letterSpacing: "1px", textTransform: "uppercase" }}>
-          v2.3 · Ponto Alpha Café
+        <div style={{ marginTop: 38, fontSize: 10, color: "rgba(245,235,224,.2)", fontFamily: "'Montserrat',sans-serif", letterSpacing: "1px", textTransform: "uppercase" }}>
+          v2.7 · Ponto Alpha Café
         </div>
       </div>
     </div>
@@ -740,8 +892,10 @@ function LandingScreen({ onAccess }) {
 
 // ─── LOGIN SCREEN ─────────────────────────────────────────────────────────────
 function LoginScreen({ onLogin, onSignup, onForgot }) {
-  const [email, setEmail] = useState("");
-  const [senha, setSenha] = useState("");
+  const savedSession = sessionStore.load();
+  const [email, setEmail] = useState(savedSession?.email || "");
+  const [senha, setSenha] = useState(savedSession?.senha || "");
+  const [remember, setRemember] = useState(!!savedSession);
   const [erro, setErro] = useState("");
   const [loading, setLoading] = useState(false);
   const isMobile = useIsMobile();
@@ -753,6 +907,8 @@ function LoginScreen({ onLogin, onSignup, onForgot }) {
     setTimeout(() => {
       const res = userStore.authenticate(email, senha);
       if (res.ok) {
+        if (remember) sessionStore.save(email.trim().toLowerCase(), senha.trim());
+        else sessionStore.clear();
         onLogin(res.user);
       } else {
         setErro(res.erro);
@@ -800,21 +956,28 @@ function LoginScreen({ onLogin, onSignup, onForgot }) {
             <input
               type="email" value={email} onChange={e => { setEmail(e.target.value); setErro(""); }}
               onKeyDown={e => e.key === "Enter" && handleLogin()}
-              placeholder="admin@pontoacafe.com"
+              placeholder="seu@email.com"
+              autoComplete="username"
               style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(196,164,120,.22)", background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none", transition: "border .2s" }}
             />
           </div>
 
           {/* Senha */}
-          <div style={{ marginBottom: 8 }}>
+          <div style={{ marginBottom: 12 }}>
             <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Senha</label>
-            <input
-              type="password" value={senha} onChange={e => { setSenha(e.target.value); setErro(""); }}
-              onKeyDown={e => e.key === "Enter" && handleLogin()}
-              placeholder="••••••••"
-              style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(196,164,120,.22)", background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
-            />
+            <PasswordInput value={senha} onChange={v => { setSenha(v); setErro(""); }} onEnter={handleLogin} placeholder="••••••••" dark />
           </div>
+
+          {/* Lembrar acesso */}
+          <label style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer", padding: "6px 0", marginBottom: 6 }}>
+            <input
+              type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)}
+              style={{ width: 17, height: 17, cursor: "pointer", accentColor: "#c4a478" }}
+            />
+            <span style={{ fontSize: 12, color: "rgba(245,235,224,.65)", fontFamily: "'Montserrat',sans-serif", fontWeight: 600 }}>
+              Lembrar meu acesso
+            </span>
+          </label>
 
           {/* Erro */}
           {erro && (
@@ -959,22 +1122,16 @@ function SignupScreen({ onBack, onCadastrar }) {
               {/* Senha */}
               <div style={{ marginBottom: 14 }}>
                 <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Senha <span style={{ fontWeight: 400, opacity: .6 }}>(mín. 6 caracteres)</span></label>
-                <input
-                  type="password" value={senha} onChange={e => { setSenha(e.target.value); setErro(""); }}
-                  placeholder="••••••••"
-                  style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid rgba(196,164,120,.22)", background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
-                />
+                <PasswordInput value={senha} onChange={v => { setSenha(v); setErro(""); }} placeholder="••••••••" dark />
               </div>
 
               {/* Confirmar Senha */}
               <div style={{ marginBottom: 16 }}>
                 <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Confirmar Senha</label>
-                <input
-                  type="password" value={confirma} onChange={e => { setConfirma(e.target.value); setErro(""); }}
-                  onKeyDown={e => e.key === "Enter" && handleCadastro()}
-                  placeholder="Repita a senha"
-                  style={{ width: "100%", padding: "12px 14px", borderRadius: 10, border: "1px solid " + (confirma && senha && confirma !== senha ? "rgba(176,48,32,.5)" : "rgba(196,164,120,.22)"), background: "rgba(250,246,241,.06)", fontSize: 13, color: "#f5ebe0", fontFamily: "'Montserrat',sans-serif", boxSizing: "border-box", outline: "none" }}
-                />
+                <PasswordInput value={confirma} onChange={v => { setConfirma(v); setErro(""); }} onEnter={handleCadastro} placeholder="Repita a senha" dark />
+                {confirma && senha && confirma !== senha && (
+                  <div style={{ fontSize: 10, color: "#ff9a8a", marginTop: 4, fontFamily: "'Montserrat',sans-serif", fontWeight: 600 }}>As senhas não coincidem</div>
+                )}
               </div>
 
               {/* Erro */}
@@ -1025,7 +1182,23 @@ function ForgotPasswordScreen({ onBack }) {
     if (!emailNorm) { setErro("Digite seu email para continuar."); return; }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailNorm)) { setErro("Email inválido."); return; }
     setErro("");
+    // Registra solicitação para os admins verem no painel
+    recoveryStore.add(emailNorm);
     setStep("sent");
+  };
+
+  const openMailto = () => {
+    const adminEmails = FIXED_ADMINS.map(a => a.email).join(",");
+    const subject = encodeURIComponent("Solicitação de recuperação de senha — Alpha Implantações");
+    const body = encodeURIComponent(
+      "Olá administradores,\n\n" +
+      "Solicito a recuperação de senha da minha conta no sistema Alpha Implantações.\n\n" +
+      "Email cadastrado: " + email.trim().toLowerCase() + "\n" +
+      "Data da solicitação: " + new Date().toLocaleString("pt-BR") + "\n\n" +
+      "Por favor, gerem uma nova senha temporária para meu acesso.\n\n" +
+      "Obrigado(a)."
+    );
+    window.location.href = "mailto:" + adminEmails + "?subject=" + subject + "&body=" + body;
   };
 
   return (
@@ -1118,21 +1291,34 @@ function ForgotPasswordScreen({ onBack }) {
               </div>
 
               <div style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 17, color: "#f5ebe0", marginBottom: 10 }}>
-                Email enviado!
+                Solicitação registrada!
               </div>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.5)", lineHeight: 1.7, marginBottom: 6 }}>
-                Se o endereço
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.55)", lineHeight: 1.7, marginBottom: 16, padding: "0 4px" }}>
+                Sua solicitação para
               </div>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, fontWeight: 700, color: "#c4a478", marginBottom: 10, wordBreak: "break-all" }}>
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, fontWeight: 700, color: "#c4a478", marginBottom: 16, wordBreak: "break-all" }}>
                 {email.trim().toLowerCase()}
               </div>
-              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 13, color: "rgba(245,235,224,.5)", lineHeight: 1.7, marginBottom: 24 }}>
-                estiver cadastrado em nosso sistema, você receberá um email com as instruções para redefinir sua senha. Verifique também a caixa de spam.
+              <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12, color: "rgba(245,235,224,.5)", lineHeight: 1.6, marginBottom: 20 }}>
+                foi enviada aos administradores. Eles vão gerar uma senha temporária e te enviar.
               </div>
 
-              <div style={{ background: "rgba(196,164,120,.08)", border: "1px solid rgba(196,164,120,.15)", borderRadius: 10, padding: "12px 14px", marginBottom: 22, fontSize: 11, color: "rgba(196,164,120,.7)", fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6, textAlign: "left" }}>
-                <div style={{ fontWeight: 700, marginBottom: 4 }}>ℹ️ Não recebeu o email?</div>
-                Aguarde até 5 minutos e confira a pasta de spam. Se o problema persistir, entre em contato com o administrador do sistema.
+              <div style={{ background: "rgba(196,164,120,.08)", border: "1px solid rgba(196,164,120,.18)", borderRadius: 10, padding: "14px", marginBottom: 18, textAlign: "left" }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.9)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 8, fontFamily: "'Montserrat',sans-serif" }}>Para acelerar o processo</div>
+                <div style={{ fontSize: 11, color: "rgba(245,235,224,.55)", fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6, marginBottom: 10 }}>
+                  Envie um email diretamente aos administradores com a sua solicitação:
+                </div>
+                <button
+                  onClick={openMailto}
+                  style={{
+                    width: "100%", padding: "11px", background: "rgba(196,164,120,.18)",
+                    border: "1px solid rgba(196,164,120,.4)", borderRadius: 8, cursor: "pointer",
+                    fontFamily: "'Montserrat',sans-serif", fontWeight: 700, fontSize: 12, color: "#c4a478",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                  }}
+                >
+                  ✉️ Enviar email aos administradores
+                </button>
               </div>
 
               <button
@@ -1149,6 +1335,72 @@ function ForgotPasswordScreen({ onBack }) {
               </button>
             </div>
           )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── CHANGE PASSWORD (forçado em primeiro login após reset) ──────────────────
+function ChangePasswordScreen({ user, onDone, onLogout }) {
+  const [novaSenha, setNovaSenha] = useState("");
+  const [confirma, setConfirma] = useState("");
+  const [erro, setErro] = useState("");
+  const isMobile = useIsMobile();
+
+  const handleSave = () => {
+    setErro("");
+    if (!novaSenha || !confirma) { setErro("Preencha os dois campos."); return; }
+    if (novaSenha.length < 6) { setErro("A senha deve ter pelo menos 6 caracteres."); return; }
+    if (novaSenha !== confirma) { setErro("As senhas não coincidem."); return; }
+    if (novaSenha === user.senha) { setErro("A nova senha deve ser diferente da atual."); return; }
+    userStore.update(user.email, { senha: novaSenha, mustChangePassword: false });
+    // atualiza sessão salva se houver
+    if (sessionStore.load()) sessionStore.save(user.email, novaSenha);
+    onDone({ ...user, senha: novaSenha, mustChangePassword: false });
+  };
+
+  return (
+    <div style={{
+      minHeight: "100vh", background: "linear-gradient(145deg, #1a0e08 0%, #2c1810 40%, #3d2214 70%, #4a3020 100%)",
+      display: "flex", alignItems: "center", justifyContent: "center", padding: "24px"
+    }}>
+      <div style={{ width: "100%", maxWidth: 400 }}>
+        <div style={{ textAlign: "center", marginBottom: 24 }}>
+          <div style={{ width: 56, height: 56, borderRadius: 16, margin: "0 auto 12px", background: "rgba(212,120,58,.15)", border: "1px solid rgba(212,120,58,.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26 }}>🔑</div>
+          <h2 style={{ fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 20, color: "#f5ebe0", margin: "0 0 6px" }}>Trocar senha</h2>
+          <p style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 12, color: "rgba(245,235,224,.5)", margin: 0, lineHeight: 1.6 }}>
+            Por segurança, você precisa definir uma nova senha pessoal antes de continuar.
+          </p>
+        </div>
+
+        <div style={{ background: "rgba(250,246,241,.05)", border: "1px solid rgba(196,164,120,.18)", borderRadius: 18, padding: isMobile ? "22px 18px" : "28px 26px" }}>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Nova Senha <span style={{ fontWeight: 400, opacity: .6 }}>(mín. 6 caracteres)</span></label>
+            <PasswordInput value={novaSenha} onChange={v => { setNovaSenha(v); setErro(""); }} placeholder="••••••••" dark />
+          </div>
+
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ display: "block", fontFamily: "'Montserrat',sans-serif", fontSize: 10, fontWeight: 700, color: "rgba(196,164,120,.8)", textTransform: "uppercase", letterSpacing: "0.8px", marginBottom: 6 }}>Confirmar Nova Senha</label>
+            <PasswordInput value={confirma} onChange={v => { setConfirma(v); setErro(""); }} onEnter={handleSave} placeholder="Repita a nova senha" dark />
+          </div>
+
+          {erro && (
+            <div style={{ background: "rgba(176,48,32,.2)", border: "1px solid rgba(176,48,32,.4)", borderRadius: 8, padding: "9px 12px", marginBottom: 14, fontSize: 12, color: "#ff9a8a", fontFamily: "'Montserrat',sans-serif", fontWeight: 600 }}>⚠ {erro}</div>
+          )}
+
+          <button
+            onClick={handleSave}
+            style={{ width: "100%", padding: "13px", background: "linear-gradient(135deg, #c4a478 0%, #b8935e 100%)", border: "none", borderRadius: 10, cursor: "pointer", fontFamily: "'Montserrat',sans-serif", fontWeight: 800, fontSize: 14, color: "#2c1810" }}
+          >
+            Salvar nova senha
+          </button>
+
+          <div style={{ textAlign: "center", marginTop: 16 }}>
+            <button onClick={onLogout} style={{ background: "none", border: "none", cursor: "pointer", fontFamily: "'Montserrat',sans-serif", fontSize: 11, fontWeight: 600, color: "rgba(196,164,120,.6)", padding: 0 }}>
+              Sair
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -1200,43 +1452,135 @@ function PendingApprovalScreen({ user, onLogout }) {
 function UsuariosView({ currentUser, obras, isMobile, refreshKey, onRefresh }) {
   const [tab, setTab] = useState("pendentes");
   const [users, setUsers] = useState([]);
+  const [recoveries, setRecoveries] = useState([]);
+  const [logs, setLogs] = useState([]);
   const [editing, setEditing] = useState(null);
+  const [resetting, setResetting] = useState(null); // { user, newPassword }
+  const [creatingUser, setCreatingUser] = useState({ nome: "", email: "", senha: "" });
+  const [userMsg, setUserMsg] = useState("");
   const [novoAdm, setNovoAdm] = useState({ nome: "", email: "", senha: "" });
   const [admMsg, setAdmMsg] = useState("");
 
-  useEffect(() => { setUsers(userStore.getAll()); }, [refreshKey]);
+  useEffect(() => {
+    setUsers(userStore.getAll());
+    setRecoveries(recoveryStore.getAll());
+    setLogs(adminLogStore.getAll());
+  }, [refreshKey]);
 
-  const reload = () => { setUsers(userStore.getAll()); onRefresh && onRefresh(); };
+  const reload = () => {
+    setUsers(userStore.getAll());
+    setRecoveries(recoveryStore.getAll());
+    setLogs(adminLogStore.getAll());
+    onRefresh && onRefresh();
+  };
+
+  const logAction = (action, target, detail = "") => {
+    adminLogStore.add(currentUser.email, action, target, detail);
+  };
 
   const approve = (email) => {
+    const u = users.find(x => x.email === email);
     userStore.update(email, {
       status: "aprovado",
       approvedBy: currentUser.email, approvedAt: new Date().toISOString(),
       permissoes: { todas: true, obras: [], viewOnly: false }
     });
+    logAction("aprovou cadastro", email, u?.nome || "");
     reload();
   };
-  const reject = (email) => { if (confirm("Rejeitar este cadastro?")) { userStore.remove(email); reload(); } };
-  const block = (email) => { userStore.update(email, { status: "bloqueado" }); reload(); };
-  const unblock = (email) => { userStore.update(email, { status: "aprovado" }); reload(); };
-  const del = (email) => { if (confirm("Excluir permanentemente?")) { userStore.remove(email); reload(); } };
-  const promoteAdmin = (email) => { userStore.update(email, { role: "admin", permissoes: { todas: true, obras: [], viewOnly: false } }); reload(); };
-  const demoteAdmin = (email) => { userStore.update(email, { role: "user" }); reload(); };
+  const reject = (email) => {
+    if (!confirm("Rejeitar este cadastro? Esta ação não pode ser desfeita.")) return;
+    userStore.remove(email);
+    logAction("rejeitou cadastro", email);
+    reload();
+  };
+  const block = (email) => {
+    if (email === currentUser.email) { alert("Você não pode bloquear sua própria conta."); return; }
+    userStore.update(email, { status: "bloqueado" });
+    logAction("bloqueou usuário", email);
+    reload();
+  };
+  const unblock = (email) => {
+    userStore.update(email, { status: "aprovado" });
+    logAction("desbloqueou usuário", email);
+    reload();
+  };
+  const del = (email) => {
+    if (email === currentUser.email) { alert("Você não pode excluir sua própria conta."); return; }
+    if (!confirm("Excluir permanentemente este usuário?")) return;
+    userStore.remove(email);
+    logAction("excluiu usuário", email);
+    reload();
+  };
+  const promoteAdmin = (email) => {
+    userStore.update(email, { role: "admin", permissoes: { todas: true, obras: [], viewOnly: false } });
+    logAction("promoveu a admin", email);
+    reload();
+  };
+  const demoteAdmin = (email) => {
+    if (email === currentUser.email) { alert("Você não pode rebaixar sua própria conta."); return; }
+    if (userStore.countActiveAdmins() <= 1) { alert("Não é possível rebaixar — o sistema deve ter ao menos um administrador ativo."); return; }
+    userStore.update(email, { role: "user" });
+    logAction("rebaixou admin a usuário", email);
+    reload();
+  };
+  const resetPassword = (u) => {
+    const newPass = userStore.generateTempPassword();
+    setResetting({ user: u, newPassword: newPass });
+    userStore.update(u.email, { senha: newPass, mustChangePassword: true });
+    logAction("redefiniu senha", u.email);
+    reload();
+  };
+  const resolveRecovery = (rec) => {
+    const u = users.find(x => x.email === rec.email);
+    if (!u) { alert("Usuário não encontrado."); recoveryStore.remove(rec.id); reload(); return; }
+    resetPassword(u);
+    recoveryStore.resolve(rec.id, currentUser.email);
+    reload();
+  };
+  const dismissRecovery = (id) => {
+    if (!confirm("Descartar esta solicitação?")) return;
+    recoveryStore.remove(id);
+    reload();
+  };
 
-  const savePermissoes = (email, permissoes) => { userStore.update(email, { permissoes }); reload(); setEditing(null); };
+  const savePermissoes = (email, permissoes) => {
+    userStore.update(email, { permissoes });
+    logAction("alterou permissões", email, JSON.stringify(permissoes));
+    reload();
+    setEditing(null);
+  };
+
+  const createUser = () => {
+    setUserMsg("");
+    if (!creatingUser.nome || !creatingUser.email || !creatingUser.senha) { setUserMsg("⚠ Preencha todos os campos."); return; }
+    if (creatingUser.senha.length < 6) { setUserMsg("⚠ Senha mínima de 6 caracteres."); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(creatingUser.email)) { setUserMsg("⚠ Email inválido."); return; }
+    const r = userStore.add(creatingUser.nome, creatingUser.email, creatingUser.senha, {
+      role: "user", status: "aprovado",
+      permissoes: { todas: true, obras: [], viewOnly: false },
+      mustChangePassword: true
+    });
+    if (!r.ok) { setUserMsg("⚠ " + r.erro); return; }
+    logAction("criou usuário", creatingUser.email, creatingUser.nome);
+    setUserMsg("✅ Usuário criado! Senha inicial: " + creatingUser.senha + " (será trocada no primeiro login)");
+    setCreatingUser({ nome: "", email: "", senha: "" });
+    reload();
+  };
 
   const createAdmin = () => {
     setAdmMsg("");
     if (!novoAdm.nome || !novoAdm.email || !novoAdm.senha) { setAdmMsg("⚠ Preencha todos os campos."); return; }
     if (novoAdm.senha.length < 6) { setAdmMsg("⚠ Senha mínima de 6 caracteres."); return; }
-    const r = userStore.add(novoAdm.nome, novoAdm.email, novoAdm.senha);
-    if (!r.ok) { setAdmMsg("⚠ " + r.erro); return; }
-    userStore.update(novoAdm.email, {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(novoAdm.email)) { setAdmMsg("⚠ Email inválido."); return; }
+    const r = userStore.add(novoAdm.nome, novoAdm.email, novoAdm.senha, {
       role: "admin", status: "aprovado",
       permissoes: { todas: true, obras: [], viewOnly: false },
-      approvedBy: currentUser.email, approvedAt: new Date().toISOString()
+      mustChangePassword: true
     });
-    setAdmMsg("✅ Administrador criado!");
+    if (!r.ok) { setAdmMsg("⚠ " + r.erro); return; }
+    logAction("criou admin", novoAdm.email, novoAdm.nome);
+    setAdmMsg("✅ Administrador criado! Senha inicial: " + novoAdm.senha + " (será trocada no primeiro login)");
     setNovoAdm({ nome: "", email: "", senha: "" });
     reload();
   };
@@ -1244,13 +1588,19 @@ function UsuariosView({ currentUser, obras, isMobile, refreshKey, onRefresh }) {
   const pendentes = users.filter(u => u.status === "pendente");
   const aprovados = users.filter(u => u.status === "aprovado");
   const bloqueados = users.filter(u => u.status === "bloqueado");
+  const recoveriesPend = recoveries.filter(r => r.status === "pendente");
 
   const TABS = [
     { id: "pendentes", l: "⏳ Pendentes (" + pendentes.length + ")" },
     { id: "aprovados", l: "✅ Aprovados (" + aprovados.length + ")" },
     { id: "bloqueados", l: "🚫 Bloqueados (" + bloqueados.length + ")" },
-    { id: "novo-admin", l: "➕ Novo Admin" }
+    { id: "recovery", l: "🔑 Recuperações (" + recoveriesPend.length + ")" },
+    { id: "novo-user", l: "➕ Novo Usuário" },
+    { id: "novo-admin", l: "👑 Novo Admin" },
+    { id: "logs", l: "📋 Log" }
   ];
+
+  const isSelf = (u) => u.email === currentUser.email;
 
   const UserCard = ({ u }) => (
     <div style={{ background: B.branco, borderRadius: 10, padding: "12px 14px", border: "1px solid " + B.creme, marginBottom: 8 }}>
@@ -1260,6 +1610,8 @@ function UsuariosView({ currentUser, obras, isMobile, refreshKey, onRefresh }) {
             {u.nome}
             {u.role === "admin" && <span style={{ marginLeft: 6, background: B.dourado, color: B.cafe, padding: "1px 7px", borderRadius: 10, fontSize: 9, fontWeight: 700 }}>ADMIN</span>}
             {u.isFixed && <span style={{ marginLeft: 4, background: B.cafe, color: B.creme, padding: "1px 7px", borderRadius: 10, fontSize: 9, fontWeight: 700 }}>FIXO</span>}
+            {isSelf(u) && <span style={{ marginLeft: 4, background: B.verde, color: "white", padding: "1px 7px", borderRadius: 10, fontSize: 9, fontWeight: 700 }}>VOCÊ</span>}
+            {u.mustChangePassword && <span style={{ marginLeft: 4, background: B.laranja, color: "white", padding: "1px 7px", borderRadius: 10, fontSize: 9, fontWeight: 700 }}>TROCAR SENHA</span>}
           </div>
           <div style={{ fontSize: 11, color: B.cinza, fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis" }}>{u.email}</div>
           {u.role !== "admin" && u.status === "aprovado" && u.permissoes && (
@@ -1276,15 +1628,14 @@ function UsuariosView({ currentUser, obras, isMobile, refreshKey, onRefresh }) {
               <button onClick={() => reject(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: "#fdecea", color: B.vermelho, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>✕ Rejeitar</button>
             </>
           )}
-          {u.status === "aprovado" && !u.isFixed && (
+          {u.status === "aprovado" && (
             <>
-              {u.role !== "admin"
-                ? <button onClick={() => setEditing(u)} style={{ padding: "6px 10px", borderRadius: 6, background: B.offwhite, color: B.caramelo, border: "1px solid " + B.creme, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>✏️ Permissões</button>
-                : null}
-              {u.role === "user"
+              {u.role !== "admin" && !u.isFixed && <button onClick={() => setEditing(u)} style={{ padding: "6px 10px", borderRadius: 6, background: B.offwhite, color: B.caramelo, border: "1px solid " + B.creme, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>✏️ Permissões</button>}
+              {!u.isFixed && <button onClick={() => resetPassword(u)} style={{ padding: "6px 10px", borderRadius: 6, background: "#fff8ee", color: B.caramelo, border: "1px solid " + B.latte, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>🔑 Reset Senha</button>}
+              {!u.isFixed && !isSelf(u) && (u.role === "user"
                 ? <button onClick={() => promoteAdmin(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: B.dourado, color: B.cafe, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>⬆ Admin</button>
-                : <button onClick={() => demoteAdmin(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: B.offwhite, color: B.caramelo, border: "1px solid " + B.creme, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>⬇ User</button>}
-              <button onClick={() => block(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: "#fff0e0", color: B.laranja, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>🚫 Bloquear</button>
+                : <button onClick={() => demoteAdmin(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: B.offwhite, color: B.caramelo, border: "1px solid " + B.creme, cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>⬇ User</button>)}
+              {!u.isFixed && !isSelf(u) && <button onClick={() => block(u.email)} style={{ padding: "6px 10px", borderRadius: 6, background: "#fff0e0", color: B.laranja, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>🚫 Bloquear</button>}
             </>
           )}
           {u.status === "bloqueado" && !u.isFixed && (
@@ -1312,19 +1663,129 @@ function UsuariosView({ currentUser, obras, isMobile, refreshKey, onRefresh }) {
         ? <div style={{ textAlign: "center", padding: 30, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>Nenhum usuário bloqueado</div>
         : bloqueados.map(u => <UserCard key={u.email} u={u} />))}
 
+      {tab === "recovery" && (recoveriesPend.length === 0
+        ? <div style={{ textAlign: "center", padding: 30, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}><div style={{ fontSize: 28, marginBottom: 6 }}>✅</div>Nenhuma solicitação de recuperação</div>
+        : recoveriesPend.map(rec => {
+            const u = users.find(x => x.email === rec.email);
+            return (
+              <div key={rec.id} style={{ background: B.branco, borderRadius: 10, padding: "12px 14px", border: "1px solid " + B.creme, marginBottom: 8 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, flexWrap: "wrap" }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 700, fontSize: 13, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>
+                      🔑 Solicitação de recuperação
+                    </div>
+                    <div style={{ fontSize: 11, color: B.caramelo, fontFamily: "'Montserrat',sans-serif", marginTop: 3, fontWeight: 600 }}>{rec.email}</div>
+                    <div style={{ fontSize: 10, color: B.cinza, fontFamily: "'Montserrat',sans-serif", marginTop: 2 }}>
+                      Solicitado em {new Date(rec.requestedAt).toLocaleString("pt-BR")}
+                    </div>
+                    {!u && <div style={{ fontSize: 10, color: B.vermelho, fontFamily: "'Montserrat',sans-serif", marginTop: 4, fontWeight: 600 }}>⚠ Email não cadastrado no sistema</div>}
+                  </div>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                    {u && <button onClick={() => resolveRecovery(rec)} style={{ padding: "6px 10px", borderRadius: 6, background: B.verde, color: "white", border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>🔑 Gerar nova senha</button>}
+                    <button onClick={() => dismissRecovery(rec.id)} style={{ padding: "6px 10px", borderRadius: 6, background: "#fdecea", color: B.vermelho, border: "none", cursor: "pointer", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>✕ Descartar</button>
+                  </div>
+                </div>
+              </div>
+            );
+          }))}
+
+      {tab === "novo-user" && (
+        <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: B.cafe, marginBottom: 10, fontFamily: "'Montserrat',sans-serif" }}>Criar novo usuário</div>
+          <div style={{ fontSize: 11, color: B.cinza, marginBottom: 14, fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6 }}>Usuários criados pelo admin já são aprovados e têm acesso total a todas as obras (você pode editar permissões depois). Eles serão obrigados a trocar a senha no primeiro login.</div>
+          <Inp label="Nome" value={creatingUser.nome} onChange={v => setCreatingUser({ ...creatingUser, nome: v })} />
+          <Inp label="Email" value={creatingUser.email} onChange={v => setCreatingUser({ ...creatingUser, email: v })} type="email" />
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4, fontFamily: "'Montserrat',sans-serif" }}>Senha inicial</label>
+            <PasswordInput value={creatingUser.senha} onChange={v => setCreatingUser({ ...creatingUser, senha: v })} placeholder="Mínimo 6 caracteres" />
+            <button onClick={() => setCreatingUser({ ...creatingUser, senha: userStore.generateTempPassword() })} style={{ marginTop: 6, background: "none", border: "none", color: B.caramelo, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "'Montserrat',sans-serif", padding: 0 }}>🎲 Gerar senha aleatória</button>
+          </div>
+          {userMsg && <div style={{ padding: "9px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: userMsg.startsWith("✅") ? "#e8f5e1" : "#fdecea", color: userMsg.startsWith("✅") ? B.verde : B.vermelho, marginBottom: 10, fontFamily: "'Montserrat',sans-serif", lineHeight: 1.5 }}>{userMsg}</div>}
+          <Btn full color={B.verde} onClick={createUser}>+ Criar Usuário</Btn>
+        </div>
+      )}
+
       {tab === "novo-admin" && (
         <div style={{ background: B.branco, borderRadius: 12, padding: 18, border: "1px solid " + B.creme }}>
           <div style={{ fontSize: 13, fontWeight: 700, color: B.cafe, marginBottom: 10, fontFamily: "'Montserrat',sans-serif" }}>Criar novo administrador</div>
-          <div style={{ fontSize: 11, color: B.cinza, marginBottom: 14, fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6 }}>Administradores têm acesso total a todas as obras e podem gerenciar usuários.</div>
+          <div style={{ fontSize: 11, color: B.cinza, marginBottom: 14, fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6 }}>Administradores têm acesso total a todas as obras e podem gerenciar usuários. Será obrigado a trocar senha no primeiro login.</div>
           <Inp label="Nome" value={novoAdm.nome} onChange={v => setNovoAdm({ ...novoAdm, nome: v })} />
           <Inp label="Email" value={novoAdm.email} onChange={v => setNovoAdm({ ...novoAdm, email: v })} type="email" />
-          <Inp label="Senha inicial" value={novoAdm.senha} onChange={v => setNovoAdm({ ...novoAdm, senha: v })} type="password" placeholder="Mínimo 6 caracteres" />
-          {admMsg && <div style={{ padding: "9px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: admMsg.startsWith("✅") ? "#e8f5e1" : "#fdecea", color: admMsg.startsWith("✅") ? B.verde : B.vermelho, marginBottom: 10, fontFamily: "'Montserrat',sans-serif" }}>{admMsg}</div>}
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4, fontFamily: "'Montserrat',sans-serif" }}>Senha inicial</label>
+            <PasswordInput value={novoAdm.senha} onChange={v => setNovoAdm({ ...novoAdm, senha: v })} placeholder="Mínimo 6 caracteres" />
+            <button onClick={() => setNovoAdm({ ...novoAdm, senha: userStore.generateTempPassword() })} style={{ marginTop: 6, background: "none", border: "none", color: B.caramelo, fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "'Montserrat',sans-serif", padding: 0 }}>🎲 Gerar senha aleatória</button>
+          </div>
+          {admMsg && <div style={{ padding: "9px 12px", borderRadius: 6, fontSize: 12, fontWeight: 600, background: admMsg.startsWith("✅") ? "#e8f5e1" : "#fdecea", color: admMsg.startsWith("✅") ? B.verde : B.vermelho, marginBottom: 10, fontFamily: "'Montserrat',sans-serif", lineHeight: 1.5 }}>{admMsg}</div>}
           <Btn full color={B.dourado} onClick={createAdmin}>👑 Criar Administrador</Btn>
         </div>
       )}
 
+      {tab === "logs" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {logs.length === 0
+            ? <div style={{ textAlign: "center", padding: 30, color: B.cinza, fontFamily: "'Montserrat',sans-serif" }}>Nenhuma ação registrada</div>
+            : [...logs].reverse().slice(0, 50).map(l => (
+              <div key={l.id} style={{ background: B.branco, borderRadius: 8, padding: "10px 13px", border: "1px solid " + B.creme }}>
+                <div style={{ fontSize: 11, color: B.cafe, fontFamily: "'Montserrat',sans-serif" }}>
+                  <strong>{l.actor}</strong> {l.action} <strong style={{ color: B.caramelo }}>{l.target}</strong>
+                </div>
+                <div style={{ fontSize: 9, color: B.cinza, fontFamily: "'Montserrat',sans-serif", marginTop: 2 }}>{new Date(l.ts).toLocaleString("pt-BR")}</div>
+              </div>
+            ))
+          }
+        </div>
+      )}
+
       {editing && <PermissoesModal user={editing} obras={obras} onSave={(perms) => savePermissoes(editing.email, perms)} onClose={() => setEditing(null)} isMobile={isMobile} />}
+      {resetting && <ResetPasswordModal info={resetting} onClose={() => setResetting(null)} />}
+    </div>
+  );
+}
+
+// Modal que mostra a senha temporária gerada após reset
+function ResetPasswordModal({ info, onClose }) {
+  const { user, newPassword } = info;
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard?.writeText(newPassword);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  const sendByMail = () => {
+    const subject = encodeURIComponent("Nova senha temporária — Alpha Implantações");
+    const body = encodeURIComponent(
+      "Olá " + user.nome + ",\n\n" +
+      "Sua senha foi redefinida no sistema Alpha Implantações.\n\n" +
+      "Email: " + user.email + "\n" +
+      "Nova senha temporária: " + newPassword + "\n\n" +
+      "No primeiro login, você será solicitado a trocar essa senha por uma definitiva.\n\n" +
+      "Acesse: https://claude.ai/...\n\n" +
+      "Atenciosamente,\nEquipe Alpha"
+    );
+    window.location.href = "mailto:" + user.email + "?subject=" + subject + "&body=" + body;
+  };
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,.7)", zIndex: 400, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div onClick={e => e.stopPropagation()} style={{ background: B.branco, borderRadius: 14, padding: 22, maxWidth: 420, width: "100%" }}>
+        <div style={{ textAlign: "center", marginBottom: 16 }}>
+          <div style={{ fontSize: 40, marginBottom: 8 }}>🔑</div>
+          <div style={{ fontFamily: "'Montserrat',sans-serif", fontSize: 16, fontWeight: 800, color: B.cafe }}>Senha redefinida</div>
+          <div style={{ fontSize: 12, color: B.cinza, fontFamily: "'Montserrat',sans-serif", marginTop: 4 }}>{user.nome} · {user.email}</div>
+        </div>
+        <div style={{ background: B.offwhite, border: "2px solid " + B.dourado, borderRadius: 10, padding: "16px", textAlign: "center", marginBottom: 14 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: B.caramelo, textTransform: "uppercase", letterSpacing: "1px", marginBottom: 6, fontFamily: "'Montserrat',sans-serif" }}>Nova senha temporária</div>
+          <div style={{ fontFamily: "'Montserrat',monospace", fontSize: 22, fontWeight: 800, color: B.cafe, letterSpacing: "2px" }}>{newPassword}</div>
+        </div>
+        <div style={{ background: "#fff8ee", border: "1px solid " + B.latte, borderRadius: 8, padding: "10px 12px", fontSize: 11, color: B.caramelo, fontFamily: "'Montserrat',sans-serif", lineHeight: 1.6, marginBottom: 14 }}>
+          ℹ️ O usuário será obrigado a trocar essa senha no próximo login. Copie ou envie por email agora — depois de fechar este aviso, a senha original não fica salva.
+        </div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <Btn outline color={B.caramelo} onClick={copy}>{copied ? "✓ Copiado" : "📋 Copiar"}</Btn>
+          <Btn color={B.cafe} onClick={sendByMail}>✉️ Enviar por email</Btn>
+          <Btn full color={B.verde} onClick={onClose}>OK, fechei</Btn>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1397,18 +1858,21 @@ function AccessDenied() {
 }
 
 // ─── SIDEBAR ─────────────────────────────────────────────────────────────────
-function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onLogout }) {
+function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onLogout, recoveryCount }) {
   const admin = isAdmin(user);
-  const canEditFull = admin || (user?.permissoes?.todas && !user?.permissoes?.viewOnly);
-  const NAV = [
-    { id: "home", l: "Dashboard", i: "🏠" },
-    ...(canEditFull ? [{ id: "nova", l: "Nova Obra", i: "➕" }] : []),
-    { id: "equipe", l: "Equipe", i: "👥" },
-    { id: "relatorios", l: "Relatórios", i: "📄" },
-    { id: "whatsapp", l: "WhatsApp", i: "💬" },
-    ...(admin ? [{ id: "usuarios", l: "Usuários", i: "🔐" }] : []),
-    ...(admin ? [{ id: "config", l: "Configurações", i: "⚙️" }] : [])
-  ];
+  const visitor = user?.isVisitor;
+  const canEditFull = !visitor && (admin || (user?.permissoes?.todas && !user?.permissoes?.viewOnly));
+  const NAV = visitor
+    ? [{ id: "home", l: "Dashboard", i: "🏠" }]
+    : [
+        { id: "home", l: "Dashboard", i: "🏠" },
+        ...(canEditFull ? [{ id: "nova", l: "Nova Obra", i: "➕" }] : []),
+        { id: "equipe", l: "Equipe", i: "👥" },
+        { id: "relatorios", l: "Relatórios", i: "📄" },
+        ...(admin ? [{ id: "whatsapp", l: "WhatsApp", i: "💬" }] : []),
+        ...(admin ? [{ id: "usuarios", l: "Usuários", i: "🔐" }] : []),
+        ...(admin ? [{ id: "config", l: "Configurações", i: "⚙️" }] : [])
+      ];
   const go = (id) => { setView(id); if (isMobile) onClose(); };
 
   const inner = (
@@ -1439,6 +1903,9 @@ function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onL
             {item.id === "home" && alertCount > 0 && (
               <span style={{ marginLeft: "auto", background: B.vermelho, color: "white", borderRadius: 10, padding: "2px 7px", fontSize: 10, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>{alertCount}</span>
             )}
+            {item.id === "usuarios" && recoveryCount > 0 && (
+              <span style={{ marginLeft: "auto", background: B.laranja, color: "white", borderRadius: 10, padding: "2px 7px", fontSize: 10, fontWeight: 700, fontFamily: "'Montserrat',sans-serif" }}>{recoveryCount}</span>
+            )}
           </button>
         ))}
       </nav>
@@ -1450,9 +1917,10 @@ function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onL
             <div style={{ fontSize: 10, fontWeight: 700, color: B.dourado, fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 4 }}>
               👤 {user.nome}
               {admin && <span style={{ background: B.dourado, color: B.cafe, padding: "1px 5px", borderRadius: 8, fontSize: 8, fontWeight: 800 }}>ADM</span>}
+              {visitor && <span style={{ background: B.cinza, color: "white", padding: "1px 5px", borderRadius: 8, fontSize: 8, fontWeight: 800 }}>DEMO</span>}
             </div>
             <div style={{ fontSize: 9, color: "rgba(245,235,224,.35)", fontFamily: "'Montserrat',sans-serif", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginTop: 1 }}>
-              {user.email}
+              {visitor ? "Acesso de visualização" : user.email}
             </div>
           </div>
         )}
@@ -1465,7 +1933,7 @@ function Sidebar({ view, setView, isMobile, open, onClose, alertCount, user, onL
             display: "flex", alignItems: "center", justifyContent: "center", gap: 6
           }}
         >
-          <span>⎋</span> Sair
+          <span>⎋</span> {visitor ? "Sair do modo demo" : "Sair"}
         </button>
         <div style={{ fontSize: 9, color: "rgba(245,235,224,.15)", textTransform: "uppercase", letterSpacing: "1px", textAlign: "center", marginTop: 10, fontFamily: "'Montserrat',sans-serif" }}>Ponto Alpha Café</div>
       </div>
@@ -2284,7 +2752,7 @@ function NovaObra({ onBack, templates, onCriar, isMobile }) {
 // ─── APP ─────────────────────────────────────────────────────────────────────
 export default function App() {
   const isMobile = useIsMobile();
-  const [screen, setScreen] = useState("landing"); // landing | login | signup | forgot | app
+  const [screen, setScreen] = useState("landing"); // landing | login | signup | forgot | pending | change-password | app
   const [user, setUser] = useState(null);
   const [obras, setObras] = useState(OBRAS_DEFAULT);
   const [logs, setLogs] = useState([]);
@@ -2331,23 +2799,46 @@ export default function App() {
     setSelObra(obra); setView("obra-detail");
   }, [user]);
   const handleCriar = useCallback((nova) => { setObras(prev => [...prev, nova]); }, []);
-  const handleLogout = () => { setUser(null); setView("home"); setSidebarOpen(false); setScreen("landing"); };
+  const handleLogout = () => {
+    sessionStore.clear();
+    setUser(null); setView("home"); setSidebarOpen(false); setScreen("landing");
+  };
+  const handleVisitor = () => {
+    setUser({ isVisitor: true, nome: "Visitante", email: "demo@visualizacao" });
+    setView("home");
+    setScreen("app");
+  };
+  const handleLogin = (u) => {
+    setUser(u);
+    if (u.status === "pendente") setScreen("pending");
+    else if (u.mustChangePassword) setScreen("change-password");
+    else setScreen("app");
+  };
+  const handlePasswordChanged = (updatedUser) => {
+    setUser(updatedUser);
+    setScreen("app");
+    setUserRefresh(x => x + 1);
+  };
 
-  const obrasVisiveis = useMemo(() => visibleObras(user, obras), [user, obras]);
-  const alertCount = obrasVisiveis.reduce((a, o) => a + o.tarefas.filter(t => t.status === "Atrasado" || (daysLeft(t, o.elap) <= 3 && t.status !== "Concluído")).length, 0);
+  const obrasVisiveis = useMemo(() => {
+    const filtered = visibleObras(user, obras);
+    return user?.isVisitor ? sanitizeForVisitor(filtered) : filtered;
+  }, [user, obras]);
+  const alertCount = user?.isVisitor ? 0 : obrasVisiveis.reduce((a, o) => a + o.tarefas.filter(t => t.status === "Atrasado" || (daysLeft(t, o.elap) <= 3 && t.status !== "Concluído")).length, 0);
+  const recoveryCount = isAdmin(user) ? recoveryStore.countPending() : 0;
 
   // ── Screens ────────────────────────────────────────────────────────────────
   if (screen === "landing") return (
     <>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
-      <LandingScreen onAccess={() => setScreen("login")} />
+      <LandingScreen onAccess={() => setScreen("login")} onVisitor={handleVisitor} />
     </>
   );
 
   if (screen === "login") return (
     <>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
-      <LoginScreen onLogin={(u) => { setUser(u); setScreen(u.status === "pendente" ? "pending" : "app"); }} onSignup={() => setScreen("signup")} onForgot={() => setScreen("forgot")} />
+      <LoginScreen onLogin={handleLogin} onSignup={() => setScreen("signup")} onForgot={() => setScreen("forgot")} />
     </>
   );
 
@@ -2355,6 +2846,13 @@ export default function App() {
     <>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
       <PendingApprovalScreen user={user} onLogout={handleLogout} />
+    </>
+  );
+
+  if (screen === "change-password") return (
+    <>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700;800;900&display=swap');*{box-sizing:border-box;margin:0;padding:0}body{font-family:'Montserrat',sans-serif}`}</style>
+      <ChangePasswordScreen user={user} onDone={handlePasswordChanged} onLogout={handleLogout} />
     </>
   );
 
@@ -2387,18 +2885,25 @@ export default function App() {
         ::-webkit-scrollbar-thumb { background: ${B.caramelo}; border-radius: 3px; }
       `}</style>
       <div style={{ display: "flex", minHeight: "100vh" }}>
-        <Sidebar view={view} setView={setView} isMobile={isMobile} open={sidebarOpen} onClose={() => setSidebarOpen(false)} alertCount={alertCount} user={user} onLogout={handleLogout} />
+        <Sidebar view={view} setView={setView} isMobile={isMobile} open={sidebarOpen} onClose={() => setSidebarOpen(false)} alertCount={alertCount} user={user} onLogout={handleLogout} recoveryCount={recoveryCount} />
         <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
+          {user?.isVisitor && (
+            <div style={{ background: "linear-gradient(90deg, " + B.dourado + ", " + B.latte + ")", color: B.cafe, padding: "8px 16px", fontSize: 11, fontWeight: 700, fontFamily: "'Montserrat',sans-serif", textAlign: "center" }}>
+              👁 MODO VISITANTE — visualização demonstrativa · dados pessoais ocultos · <button onClick={() => { setUser(null); setScreen("login"); }} style={{ background: "rgba(44,24,16,.15)", border: "none", color: B.cafe, padding: "3px 10px", borderRadius: 6, fontSize: 11, fontWeight: 700, cursor: "pointer", marginLeft: 6, fontFamily: "'Montserrat',sans-serif" }}>Fazer login para acesso completo →</button>
+            </div>
+          )}
           <TopBar isMobile={isMobile} onMenu={() => setSidebarOpen(true)} alertCount={alertCount} view={view} selObra={selObra} user={user} onLogout={handleLogout} />
           <div style={{ flex: 1, padding: isMobile ? "0 16px 24px" : "0 26px 24px", overflowX: "hidden" }}>
-            {view === "home" && <HomeView obras={obrasVisiveis} onSelect={handleSelect} logs={logs} isMobile={isMobile} />}
+            {view === "home" && <HomeView obras={obrasVisiveis} onSelect={handleSelect} logs={user?.isVisitor ? [] : logs} isMobile={isMobile} />}
             {view === "obra-detail" && selObra && canAccessObra(user, selObra.id) && <ObraDetail obra={selObra} onBack={() => setView("home")} onUpdate={handleUpdate} addLog={addLog} isMobile={isMobile} user={user} />}
-            {view === "nova" && (canEdit(user) && (isAdmin(user) || user?.permissoes?.todas)
+            {view === "nova" && (!user?.isVisitor && canEdit(user) && (isAdmin(user) || user?.permissoes?.todas)
               ? <NovaObra onBack={() => setView("home")} templates={templates} onCriar={handleCriar} isMobile={isMobile} />
               : <AccessDenied />)}
-            {view === "equipe" && <EquipeView obras={obrasVisiveis} logs={logs} />}
+            {view === "equipe" && <EquipeView obras={obrasVisiveis} logs={user?.isVisitor ? [] : logs} />}
             {view === "relatorios" && <RelatoriosView obras={obrasVisiveis} />}
-            {view === "whatsapp" && <WhatsAppView obras={obrasVisiveis} contatos={contatos} setContatos={setContatos} agend={agend} setAgend={setAgend} />}
+            {view === "whatsapp" && (isAdmin(user)
+              ? <WhatsAppView obras={obrasVisiveis} contatos={contatos} setContatos={setContatos} agend={agend} setAgend={setAgend} />
+              : <AccessDenied />)}
             {view === "usuarios" && (isAdmin(user)
               ? <UsuariosView currentUser={user} obras={obras} isMobile={isMobile} refreshKey={userRefresh} onRefresh={() => setUserRefresh(x => x + 1)} />
               : <AccessDenied />)}
